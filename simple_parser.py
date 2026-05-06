@@ -2,9 +2,12 @@
 Rule-based event parser — no AI required.
 Normalises raw scraped RawEvent objects into structured dicts.
 """
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from scraper import RawEvent
 
+# ---------------------------------------------------------------------------
+# Site → Category mapping
+# ---------------------------------------------------------------------------
 SITE_CATEGORY = {
     "HOMEDEC":           "Mall Event",
     "HomeLove MY":       "Electronics",
@@ -29,27 +32,101 @@ SITE_CATEGORY = {
     "Shopee MY":         "Online",
 }
 
+# ---------------------------------------------------------------------------
+# Noise filter — exact lowercase matches that are NOT events
+# ---------------------------------------------------------------------------
+NOISE_TITLES_EXACT = {
+    "contact us", "about us", "about", "home", "search", "events",
+    "promotions", "promotion", "news", "login", "register", "sign in",
+    "sign up", "newsletter", "faq", "sitemap", "careers", "jobs",
+    "privacy policy", "terms", "terms of use", "academy", "membership",
+    "boardroom rental", "featured event", "my.it magazine",
+    "pikom membership", "pikom academy", "ict job market outlook",
+    "ict strategic review", "whats on", "what's on", "happenings",
+    "read more", "learn more", "see more", "view all", "more info",
+    "click here", "find out more",
+}
+
+NOISE_TITLE_PREFIXES = (
+    "page ", "category:", "tag:", "archive:", "author:",
+)
+
+MIN_TITLE_LEN = 10   # characters
+
+# ---------------------------------------------------------------------------
+# Date helpers
+# ---------------------------------------------------------------------------
+_TODAY      = date.today()
+_DATE_MIN   = _TODAY - timedelta(days=14)     # ignore events ended >14 days ago
+_DATE_MAX   = _TODAY + timedelta(days=730)    # ignore events >2 years away
+
+
+def _valid_date(date_str: str) -> bool:
+    """Return True if date_str is parseable and within the acceptable window."""
+    if not date_str:
+        return False
+    try:
+        d = date.fromisoformat(date_str)
+        return _DATE_MIN <= d <= _DATE_MAX
+    except ValueError:
+        return False
+
+
+def _is_noise(title: str) -> bool:
+    """Return True if the title looks like a navigation item, not an event."""
+    t = title.strip()
+    if len(t) < MIN_TITLE_LEN:
+        return True
+    tl = t.lower()
+    if tl in NOISE_TITLES_EXACT:
+        return True
+    if any(tl.startswith(p) for p in NOISE_TITLE_PREFIXES):
+        return True
+    # All-caps short strings are usually menu labels (e.g. "CONTACT US")
+    if t.isupper() and len(t) < 40:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Main parser
+# ---------------------------------------------------------------------------
 
 def parse_events(raw_events: list[RawEvent]) -> list[dict]:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    seen_titles: set[str] = set()
+    seen: set[str] = set()
     results: list[dict] = []
 
     for e in raw_events:
         title = (e.title or "").strip()
-        if not title or len(title) < 4:
+
+        # ── noise filter ──────────────────────────────────────────────────
+        if _is_noise(title):
             continue
 
-        # Deduplicate within the same batch
-        dedup_key = f"{title.lower()}|{e.start_date}|{e.source_site}"
-        if dedup_key in seen_titles:
+        # ── date validation ───────────────────────────────────────────────
+        start = e.start_date or ""
+        end   = e.end_date   or start
+
+        # For media sites (article publish dates), only keep recent articles
+        if e.source_site in ("Lowyat.net", "SoyaCincau"):
+            if not _valid_date(start):
+                continue   # skip articles with no date or old dates
+        else:
+            # For retail / event sites: skip if no date at all
+            # (avoids flooding calendar with today's date)
+            if not start:
+                continue
+            # If date is out of range, skip
+            if start and not _valid_date(start):
+                continue
+
+        # ── deduplication ─────────────────────────────────────────────────
+        key = f"{title.lower()}|{start}|{e.source_site}"
+        if key in seen:
             continue
-        seen_titles.add(dedup_key)
+        seen.add(key)
 
-        start = e.start_date or today
-        end   = e.end_date or start
-
-        # One-line summary without AI
+        # ── summary ───────────────────────────────────────────────────────
         parts = [title]
         if e.organizer and e.organizer.lower() not in title.lower():
             parts.append(f"by {e.organizer}")
