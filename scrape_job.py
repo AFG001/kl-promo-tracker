@@ -106,6 +106,8 @@ async def main():
     site_results = await run_all_scrapers()
 
     total_new = total_updated = 0
+    fresh_events: list[dict] = []   # collect only events from this run
+
     for site_name, raw_events in site_results.items():
         if not raw_events:
             print(f"  [{site_name}] 0 events")
@@ -113,7 +115,9 @@ async def main():
         parsed = parse_events(raw_events)
         n = u = 0
         for event in parsed:
-            _, is_new = db.upsert_event(event)
+            doc_id, is_new = db.upsert_event(event)
+            event["id"] = doc_id
+            fresh_events.append(event)
             if is_new:
                 n += 1
             else:
@@ -124,9 +128,8 @@ async def main():
 
     print(f"\n[scrape_job] Scrape done: +{total_new} new, ~{total_updated} updated")
 
-    # ── export events.json ─────────────────────────────────────────────────────
-    all_events = db.get_events()
-    calendar_events = [to_calendar_event(e) for e in all_events]
+    # ── export events.json (fresh data only, ignores stale Firestore records) ──
+    calendar_events = [to_calendar_event(e) for e in fresh_events]
 
     DOCS_DIR.mkdir(exist_ok=True)
     meta = {
