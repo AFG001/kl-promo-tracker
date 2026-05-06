@@ -101,11 +101,60 @@ def _date_range(text: str) -> tuple[str, str]:
             s += " " + yr_m.group()
         return _parse_date(s), _parse_date(e)
 
-    # "D Month YYYY"
+    # "D Month YYYY" or "Month D, YYYY" — fallback to _parse_date
     m = re.search(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}", text)
     if m:
         d = _parse_date(m.group())
         return d, d
+
+    # Final fallback: try _parse_date on the entire text (handles "May 6, 2026" etc.)
+    d = _parse_date(text)
+    if d and re.match(r"\d{4}-\d{2}-\d{2}", d):
+        return d, d
+
+    return "", ""
+
+
+def _url_date(url: str) -> str:
+    """Extract date from WordPress-style URLs: /YYYY/MM/DD/slug/"""
+    m = re.search(r"/(\d{4})/(\d{2})/(\d{2})/", url)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    return ""
+
+
+def _card_date(card: BeautifulSoup, link_url: str = "") -> tuple[str, str]:
+    """Multi-strategy date extraction from an article card element."""
+    # 1. time[datetime] attribute (most reliable for WordPress)
+    time_el = card.select_one("time[datetime]")
+    if time_el:
+        dt = time_el.get("datetime", "")
+        if dt:
+            return _date_range(dt)
+
+    # 2. Any element whose class contains 'date'
+    for el in card.find_all(True):
+        cls = " ".join(el.get("class", []))
+        if "date" in cls.lower():
+            text = _clean(el.get_text())
+            if text:
+                s, e = _date_range(text)
+                if s:
+                    return s, e
+
+    # 3. Generic time element text
+    time_el = card.select_one("time, .post-date, .entry-date, .published, .updated")
+    if time_el:
+        text = _clean(time_el.get_text())
+        s, e = _date_range(text)
+        if s:
+            return s, e
+
+    # 4. Extract from URL (e.g. soyacincau.com/2026/05/06/slug/)
+    if link_url:
+        d = _url_date(link_url)
+        if d:
+            return d, d
 
     return "", ""
 
@@ -575,27 +624,29 @@ async def scrape_lowyat(client: httpx.AsyncClient) -> list[RawEvent]:
     base = "https://www.lowyat.net"
     events: list[RawEvent] = []
     search_urls = [
-        f"{base}/?s=fair+kuala+lumpur",
-        f"{base}/?s=pc+fair",
-        f"{base}/?s=electronics+expo",
         f"{base}/category/deals/",
+        f"{base}/category/news/",
+        f"{base}/?s=pc+fair+malaysia",
+        f"{base}/?s=electronics+expo+malaysia",
     ]
+    seen: set[str] = set()
     for url in search_urls:
         try:
             soup = _soup(await _get(client, url))
-            for card in soup.select("article, .post, .article-item"):
-                title_el = card.select_one("h2, h3, .entry-title, .post-title")
+            for card in soup.select("article, .post, .article-item, .td-module-container"):
+                title_el = card.select_one("h2, h3, .entry-title, .post-title, .td-module-title")
                 if not title_el:
                     continue
                 title = _clean(title_el.get_text())
                 if not _is_electronics_related(title):
                     continue
-                date_el = card.select_one("time, .entry-date, .post-date")
-                date_text = date_el.get("datetime", "") or _clean(date_el.get_text()) if date_el else ""
-                start, end = _date_range(date_text)
                 link_el = card.select_one("a[href]")
                 link = _abs_url(link_el["href"] if link_el else url, base)
-                desc_el = card.select_one(".entry-summary, .excerpt, p")
+                if link in seen:
+                    continue
+                seen.add(link)
+                start, end = _card_date(card, link)
+                desc_el = card.select_one(".entry-summary, .excerpt, .td-excerpt, p")
                 desc = _clean(desc_el.get_text()) if desc_el else ""
                 events.append(RawEvent(
                     title=title, organizer="(via Lowyat.net)",
@@ -615,27 +666,29 @@ async def scrape_soyacincau(client: httpx.AsyncClient) -> list[RawEvent]:
     base = "https://soyacincau.com"
     events: list[RawEvent] = []
     search_urls = [
-        f"{base}/?s=fair+kuala+lumpur",
-        f"{base}/?s=electronics+expo",
-        f"{base}/category/deals/",
         f"{base}/category/events/",
+        f"{base}/category/deals/",
+        f"{base}/?s=fair+malaysia",
+        f"{base}/?s=electronics+expo",
     ]
+    seen: set[str] = set()
     for url in search_urls:
         try:
             soup = _soup(await _get(client, url))
-            for card in soup.select("article, .post, .article-card"):
-                title_el = card.select_one("h2, h3, .entry-title")
+            for card in soup.select("article, .post, .article-card, .jeg_post"):
+                title_el = card.select_one("h2, h3, .entry-title, .jeg_post_title")
                 if not title_el:
                     continue
                 title = _clean(title_el.get_text())
                 if not _is_electronics_related(title):
                     continue
-                date_el = card.select_one("time, .entry-date")
-                date_text = date_el.get("datetime", "") or _clean(date_el.get_text()) if date_el else ""
-                start, end = _date_range(date_text)
                 link_el = card.select_one("a[href]")
                 link = _abs_url(link_el["href"] if link_el else url, base)
-                desc_el = card.select_one(".entry-summary, .excerpt, p")
+                if link in seen:
+                    continue
+                seen.add(link)
+                start, end = _card_date(card, link)
+                desc_el = card.select_one(".entry-summary, .excerpt, .jeg_post_excerpt, p")
                 desc = _clean(desc_el.get_text()) if desc_el else ""
                 events.append(RawEvent(
                     title=title, organizer="(via SoyaCincau)",
