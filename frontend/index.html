@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KL Electronics Promo Tracker</title>
+
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===== Header ===== -->
+  <header class="app-header">
+    <div class="header-left">
+      <h1>KL Electronics Promo Tracker</h1>
+      <span class="subtitle">Kuala Lumpur — Retail &amp; Event Promotions</span>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-primary" id="btn-scrape" onclick="triggerScrape()">
+        ⟳ Scrape Now
+      </button>
+      <button class="btn btn-secondary" onclick="openDigest()">
+        ☰ Generate Report
+      </button>
+      <button class="btn btn-outline" onclick="exportCSV()">
+        ↓ Export CSV
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== Filter Bar ===== -->
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label>Source</label>
+      <select id="filter-site" onchange="applyFilters()">
+        <option value="">All</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>Category</label>
+      <select id="filter-category" onchange="applyFilters()">
+        <option value="">All</option>
+        <option value="Electronics">Electronics</option>
+        <option value="Brand Event">Brand Event</option>
+        <option value="Mall Event">Mall Event</option>
+        <option value="Online">Online</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>Search</label>
+      <input type="text" id="filter-search" placeholder="Title, organiser..."
+             oninput="debounceSearch()" />
+    </div>
+    <div class="filter-group tier-filter-group">
+      <label>Tier</label>
+      <select id="filter-tier" onchange="applyFilters()">
+        <option value="">All</option>
+        <option value="Tier1-Exhibition">Tier 1 – Exhibition</option>
+        <option value="Tier2-Retail">Tier 2 – Retail</option>
+        <option value="Tier3-Venue">Tier 3 – Venue</option>
+        <option value="Tier4-Media">Tier 4 – Media</option>
+        <option value="Tier5-Brand">Tier 5 – Brand</option>
+        <option value="Tier6-Online">Tier 6 – Online</option>
+      </select>
+    </div>
+    <div class="filter-group stats-group" id="stats-label">Events: —</div>
+  </div>
+
+  <!-- ===== Main Layout ===== -->
+  <div class="main-layout">
+
+    <!-- Calendar -->
+    <div class="calendar-panel">
+      <div id="calendar"></div>
+    </div>
+
+    <!-- Detail Side Panel -->
+    <div class="side-panel" id="side-panel">
+      <div class="side-placeholder">
+        <span>📅</span>
+        <p>Click an event to<br>view details</p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== Status Bar ===== -->
+  <div class="status-bar">
+    <span id="status-text">Ready</span>
+    <span id="next-run-text"></span>
+  </div>
+
+  <!-- ===== Report Modal ===== -->
+  <div class="modal-overlay" id="digest-modal" onclick="closeDigest(event)">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Promotion Trend Report</h2>
+        <button class="modal-close" onclick="closeDigest()">✕</button>
+      </div>
+      <div class="modal-body" id="digest-content">
+        <div class="loading">Generating report with Claude AI…</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="copyDigest()">Copy</button>
+        <button class="btn btn-secondary" onclick="closeDigest()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tier Legend Modal ===== -->
+  <div class="modal-overlay" id="legend-modal" onclick="closeLegend(event)">
+    <div class="modal modal--narrow">
+      <div class="modal-header">
+        <h2>Source Tiers</h2>
+        <button class="modal-close" onclick="closeLegend()">✕</button>
+      </div>
+      <div class="modal-body" id="legend-content"></div>
+    </div>
+  </div>
+
+  <!-- ===== Toast ===== -->
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
