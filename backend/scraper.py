@@ -10,6 +10,7 @@ Tier 5 – Brands (launch events): Samsung MY, LG MY, Panasonic MY
 Tier 6 – Online campaigns      : Lazada MY, Shopee MY
 """
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -115,6 +116,65 @@ def _date_range(text: str) -> tuple[str, str]:
     return "", ""
 
 
+_EVENT_TYPES = {
+    "Event", "ExhibitionEvent", "BusinessEvent", "SaleEvent",
+    "Festival", "SportsEvent", "MusicEvent", "EducationEvent",
+}
+
+
+def _jsonld_events(
+    soup: BeautifulSoup,
+    base_url: str,
+    organizer: str,
+    source_site: str,
+    location: str,
+    venue: str,
+    tags: list[str],
+) -> list[RawEvent]:
+    """Extract events from JSON-LD structured data (schema.org Event)."""
+    events: list[RawEvent] = []
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        items: list = []
+        if isinstance(data, dict):
+            items = data.get("@graph", []) or [data]
+        elif isinstance(data, list):
+            items = data
+        for item in items:
+            t = item.get("@type", "")
+            if isinstance(t, list):
+                t = t[0]
+            if t not in _EVENT_TYPES:
+                continue
+            name = item.get("name", "").strip()
+            if not name or len(name) < 6:
+                continue
+            raw_start = item.get("startDate", "")[:10]
+            raw_end   = item.get("endDate",   raw_start)[:10]
+            start = _parse_date(raw_start)
+            end   = _parse_date(raw_end) or start
+            loc_data = item.get("location", {})
+            loc_name = ""
+            if isinstance(loc_data, dict):
+                loc_name = (
+                    loc_data.get("name", "")
+                    or loc_data.get("address", {}).get("addressLocality", "")
+                )
+            events.append(RawEvent(
+                title=name, organizer=organizer,
+                location=loc_name or location,
+                venue=venue,
+                start_date=start, end_date=end,
+                source_url=item.get("url", base_url),
+                source_site=source_site,
+                tags=tags,
+            ))
+    return events
+
+
 def _url_date(url: str) -> str:
     """Extract date from WordPress-style URLs: /YYYY/MM/DD/slug/"""
     m = re.search(r"/(\d{4})/(\d{2})/(\d{2})/", url)
@@ -183,11 +243,17 @@ def _abs_url(href: str, base: str) -> str:
 async def scrape_homedec(client: httpx.AsyncClient) -> list[RawEvent]:
     events: list[RawEvent] = []
     base = "https://homedec.com.my"
-    urls = [f"{base}/homedec-kl/", f"{base}/events/"]
+    urls = [f"{base}/homedec-kl/", f"{base}/events/", f"{base}/"]
     for url in urls:
         try:
             soup = _soup(await _get(client, url))
-            # Main featured event banner
+
+            # 1. JSON-LD structured data (most reliable)
+            jld = _jsonld_events(soup, url, "HOMEDEC", "HOMEDEC",
+                                 "Kuala Lumpur", "", ["exhibition", "home-appliance", "fair", "kl"])
+            events.extend(jld)
+
+            # 2. Card-level extraction
             for card in soup.select("article, .event-item, .exhibition-item, section.event, .promo-block"):
                 title_el = card.select_one("h1, h2, h3, h4, .title")
                 if not title_el:
@@ -195,14 +261,15 @@ async def scrape_homedec(client: httpx.AsyncClient) -> list[RawEvent]:
                 title = _clean(title_el.get_text())
                 if not title:
                     continue
-                date_el = card.select_one(".date, time, .event-date, .period")
-                start, end = _date_range(_clean(date_el.get_text()) if date_el else "")
-                venue_el = card.select_one(".venue, .location, .place")
-                venue = _clean(venue_el.get_text()) if venue_el else "HOMEDEC Venue"
-                desc_el = card.select_one("p, .desc, .description")
-                desc = _clean(desc_el.get_text()) if desc_el else ""
                 link_el = card.select_one("a[href]")
                 link = _abs_url(link_el["href"], base) if link_el else url
+                start, end = _card_date(card, link)
+                if not start:
+                    continue
+                venue_el = card.select_one(".venue, .location, .place")
+                venue = _clean(venue_el.get_text()) if venue_el else ""
+                desc_el = card.select_one("p, .desc, .description")
+                desc = _clean(desc_el.get_text()) if desc_el else ""
                 events.append(RawEvent(
                     title=title, organizer="HOMEDEC",
                     location="Kuala Lumpur", venue=venue,
@@ -211,22 +278,23 @@ async def scrape_homedec(client: httpx.AsyncClient) -> list[RawEvent]:
                     source_site="HOMEDEC",
                     tags=["exhibition", "home-appliance", "fair", "kl"],
                 ))
-            # Also grab any date/venue info directly on the page (for single-event pages)
+
+            # 3. Page-level fallback: look for dates in body text near heading
             if not events:
                 h = soup.select_one("h1, h2, .exhibition-title")
                 if h:
                     title = _clean(h.get_text())
-                    date_text = " ".join(t.get_text() for t in soup.select("time, .date, .period"))
-                    start, end = _date_range(date_text)
-                    venue_el = soup.select_one(".venue, .location")
-                    venue = _clean(venue_el.get_text()) if venue_el else ""
-                    events.append(RawEvent(
-                        title=title, organizer="HOMEDEC",
-                        location="Kuala Lumpur", venue=venue,
-                        start_date=start, end_date=end,
-                        source_url=url, source_site="HOMEDEC",
-                        tags=["exhibition", "home-appliance", "fair", "kl"],
-                    ))
+                    # Search nearby text for date pattern
+                    page_text = " ".join(_clean(el.get_text()) for el in soup.select("p, span, li, .date, time"))
+                    start, end = _date_range(page_text[:1000])
+                    if start:
+                        events.append(RawEvent(
+                            title=title, organizer="HOMEDEC",
+                            location="Kuala Lumpur", venue="",
+                            start_date=start, end_date=end,
+                            source_url=url, source_site="HOMEDEC",
+                            tags=["exhibition", "home-appliance", "fair", "kl"],
+                        ))
         except Exception as exc:
             print(f"[scraper] HOMEDEC error: {exc}")
     return events
@@ -624,10 +692,10 @@ async def scrape_lowyat(client: httpx.AsyncClient) -> list[RawEvent]:
     base = "https://www.lowyat.net"
     events: list[RawEvent] = []
     search_urls = [
+        f"{base}/",                              # homepage — most recent articles
         f"{base}/category/deals/",
         f"{base}/category/news/",
-        f"{base}/?s=pc+fair+malaysia",
-        f"{base}/?s=electronics+expo+malaysia",
+        f"{base}/category/features/",
     ]
     seen: set[str] = set()
     for url in search_urls:

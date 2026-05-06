@@ -56,18 +56,20 @@ MIN_TITLE_LEN = 10   # characters
 # ---------------------------------------------------------------------------
 # Date helpers
 # ---------------------------------------------------------------------------
-_TODAY      = date.today()
-_DATE_MIN   = _TODAY - timedelta(days=14)     # ignore events ended >14 days ago
-_DATE_MAX   = _TODAY + timedelta(days=730)    # ignore events >2 years away
+_TODAY          = date.today()
+_DATE_MIN       = _TODAY - timedelta(days=14)   # ignore events ended >14 days ago
+_DATE_MIN_MEDIA = _TODAY - timedelta(days=30)   # media articles: allow slightly older
+_DATE_MAX       = _TODAY + timedelta(days=730)  # ignore events >2 years away
 
 
-def _valid_date(date_str: str) -> bool:
+def _valid_date(date_str: str, media: bool = False) -> bool:
     """Return True if date_str is parseable and within the acceptable window."""
     if not date_str:
         return False
     try:
         d = date.fromisoformat(date_str)
-        return _DATE_MIN <= d <= _DATE_MAX
+        min_d = _DATE_MIN_MEDIA if media else _DATE_MIN
+        return min_d <= d <= _DATE_MAX
     except ValueError:
         return False
 
@@ -109,7 +111,7 @@ def parse_events(raw_events: list[RawEvent]) -> list[dict]:
 
         # For media sites (article publish dates), only keep recent articles
         if e.source_site in ("Lowyat.net", "SoyaCincau"):
-            if not _valid_date(start):
+            if not _valid_date(start, media=True):
                 continue   # skip articles with no date or old dates
         else:
             # For retail / event sites: skip if no date at all
