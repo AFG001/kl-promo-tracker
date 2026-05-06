@@ -110,9 +110,12 @@ async def main():
 
     for site_name, raw_events in site_results.items():
         if not raw_events:
-            print(f"  [{site_name}] 0 events")
+            print(f"  [{site_name}] 0 raw events")
             continue
         parsed = parse_events(raw_events)
+        print(f"  [{site_name}] raw={len(raw_events)} parsed={len(parsed)}")
+        for raw in raw_events[:3]:  # debug: show first 3 raw titles/dates
+            print(f"    raw: '{raw.title[:60]}' start='{raw.start_date}'")
         n = u = 0
         for event in parsed:
             doc_id, is_new = db.upsert_event(event)
@@ -122,7 +125,7 @@ async def main():
                 n += 1
             else:
                 u += 1
-        print(f"  [{site_name}] +{n} new, ~{u} updated (raw={len(raw_events)})")
+        print(f"  [{site_name}] +{n} new, ~{u} updated")
         total_new     += n
         total_updated += u
 

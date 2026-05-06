@@ -75,12 +75,22 @@ def _parse_date(text: str) -> str:
 
 
 def _date_range(text: str) -> tuple[str, str]:
-    """Parse 'D1 – D2 Month YYYY' or 'D1 Month – D2 Month YYYY' style strings."""
-    text = re.sub(r"[–—]", "-", text)
+    """Parse various date formats including ISO datetime attributes."""
+    text = re.sub(r"[–—]", "-", text).strip()
+
+    # ISO datetime / date (e.g. <time datetime="2026-05-06T18:00:00+08:00">)
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", text)
+    if m:
+        d = m.group(1)
+        return d, d
+
+    # "D1 – D2 Month YYYY"
     m = re.search(r"(\d{1,2})\s*-\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", text)
     if m:
         d1, d2, mon, yr = m.groups()
         return _parse_date(f"{d1} {mon} {yr}"), _parse_date(f"{d2} {mon} {yr}")
+
+    # "D1 Month – D2 Month YYYY"
     m = re.search(
         r"(\d{1,2}\s+[A-Za-z]+\s*\d*)\s*-\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})", text
     )
@@ -90,10 +100,13 @@ def _date_range(text: str) -> tuple[str, str]:
         if yr_m and not re.search(r"\d{4}", s):
             s += " " + yr_m.group()
         return _parse_date(s), _parse_date(e)
+
+    # "D Month YYYY"
     m = re.search(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}", text)
     if m:
         d = _parse_date(m.group())
         return d, d
+
     return "", ""
 
 
