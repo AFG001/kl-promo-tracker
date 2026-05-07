@@ -34,6 +34,9 @@ ELEC_KEYWORDS = [
     "tech", "electronic", "gadget", "phone", "smartphone", "tv", "television",
     "audio", "appliance", "computer", "laptop", "camera", "fair", "expo",
     "digital", "home appliance", "pc fair", "consumer electronics",
+    "semicon", "semiconductor", "ict", "it fair", "smart home", "smart",
+    "innovation", "robotics", "automation", "gaming", "drone", "solar",
+    "electric", "battery", "charging", "wireless", "broadband", "cloud",
 ]
 
 
@@ -502,32 +505,67 @@ async def scrape_best_denki(client: httpx.AsyncClient) -> list[RawEvent]:
 # TIER 3 – Venue calendars
 # ===========================================================================
 
+_DATE_TEXT_RE = re.compile(
+    r"\d{1,2}\s*[-–]\s*\d{1,2}\s+[A-Za-z]+\s+\d{4}"   # "5 - 7 May 2026"
+    r"|"
+    r"\d{1,2}\s+[A-Za-z]+\s*[-–]\s*\d{1,2}\s+[A-Za-z]+\s+\d{4}"  # "30 Apr - 3 May 2026"
+)
+
+
 async def scrape_mitec(client: httpx.AsyncClient) -> list[RawEvent]:
+    """
+    MITEC homepage lists upcoming events with date text like '5 - 7 May 2026'.
+    Strategy: find all date-pattern text nodes, then look for the nearest heading.
+    """
     base = "https://www.mitec.com.my"
     events: list[RawEvent] = []
-    for url in [f"{base}/events", f"{base}/whats-on"]:
+    for url in [f"{base}/", f"{base}/events/"]:
         try:
             soup = _soup(await _get(client, url))
-            for card in soup.select("article, .event-item, .event-card, li.event"):
-                title_el = card.select_one("h2, h3, h4, .title")
-                if not title_el:
+
+            # JSON-LD first
+            jld = _jsonld_events(soup, url, "MITEC", "MITEC",
+                                 "Kuala Lumpur",
+                                 "Malaysia International Trade & Exhibition Centre",
+                                 ["venue", "exhibition", "kl"])
+            events.extend(jld)
+
+            # Text-node date search: "D - D Month YYYY" anywhere on page
+            seen: set[str] = set()
+            for text_node in soup.find_all(string=_DATE_TEXT_RE):
+                date_text = _clean(str(text_node))
+                start, end = _date_range(date_text)
+                if not start:
                     continue
-                title = _clean(title_el.get_text())
+                # Nearest heading after/before this node
+                parent = text_node.parent
+                title = ""
+                for tag in ["h1","h2","h3","h4","h5","strong"]:
+                    heading = (parent.find_next(tag) or
+                               parent.find_previous(tag))
+                    if heading:
+                        title = _clean(heading.get_text())
+                        break
+                if not title or len(title) < 5:
+                    continue
                 if not _is_electronics_related(title):
                     continue
-                date_el = card.select_one(".date, time, .period")
-                start, end = _date_range(_clean(date_el.get_text()) if date_el else "")
-                link_el = card.select_one("a[href]")
-                link = _abs_url(link_el["href"] if link_el else url, base)
+                key = f"{title}|{start}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                link_el = parent.find_next("a", href=True)
+                link = _abs_url(link_el["href"], base) if link_el else url
                 events.append(RawEvent(
                     title=title, organizer="MITEC",
-                    location="Kuala Lumpur", venue="Malaysia International Trade & Exhibition Centre",
+                    location="Kuala Lumpur",
+                    venue="Malaysia International Trade & Exhibition Centre",
                     start_date=start, end_date=end,
                     source_url=link, source_site="MITEC",
                     tags=["venue", "exhibition", "kl"],
                 ))
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[scraper] MITEC error: {exc}")
     return events
 
 
