@@ -51,6 +51,7 @@ SITE_COLORS = {
     "Best Denki MY":     "#2e7d32",
     "MITEC":             "#6a1b9a",
     "KLCC Convention":   "#ad1457",
+    "MVEC":              "#00897b",
     "PWTC":              "#00695c",
     "Mid Valley":        "#4527a0",
     "Sunway Pyramid":    "#00838f",

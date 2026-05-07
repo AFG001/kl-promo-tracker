@@ -18,6 +18,7 @@ SITE_CATEGORY = {
     "Best Denki MY":     "Electronics",
     "MITEC":             "Mall Event",
     "KLCC Convention":   "Mall Event",
+    "MVEC":              "Mall Event",
     "PWTC":              "Mall Event",
     "Mid Valley":        "Mall Event",
     "Sunway Pyramid":    "Mall Event",

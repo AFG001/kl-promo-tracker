@@ -10,6 +10,7 @@ Tier 5 – Brands (launch events): Samsung MY, LG MY, Panasonic MY
 Tier 6 – Online campaigns      : Lazada MY, Shopee MY
 """
 import asyncio
+import html as html_module
 import json
 import re
 from dataclasses import dataclass, field
@@ -598,32 +599,121 @@ async def scrape_mitec(client: httpx.AsyncClient) -> list[RawEvent]:
     return events
 
 
+def _parse_klcc_date(s: str) -> str:
+    """Parse 'May 07, 2026, 12:00 AM' → '2026-05-07'."""
+    if not s:
+        return ""
+    try:
+        return datetime.strptime(s.strip(), "%b %d, %Y, %I:%M %p").date().isoformat()
+    except ValueError:
+        return ""
+
+
 async def scrape_klcc_convention(client: httpx.AsyncClient) -> list[RawEvent]:
-    base = "https://www.klccconventioncentre.com"
+    """KLCC Convention Centre – What's On via XTOPIA CMS internal API."""
+    base    = "https://www.klccconventioncentre.com"
+    API_URL = f"{base}/data_molecule_source/contentMS_rmo.ashx"
+    TID     = "ddb45973-2631-408a-955e-f0b254ee61fa"
     events: list[RawEvent] = []
-    for url in [f"{base}/events", f"{base}/whats-on"]:
+    seen:   set[str]       = set()
+
+    api_headers = {
+        "User-Agent":      HEADERS["User-Agent"],
+        "Content-Type":    "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer":         f"{base}/whats-on",
+        "Origin":          base,
+    }
+
+    for idx in range(20):   # safety cap – site currently shows ~35 events
         try:
-            soup = _soup(await _get(client, url))
-            for card in soup.select("article, .event-item, .event-card"):
-                title_el = card.select_one("h2, h3, h4, .title")
-                if not title_el:
+            r = await client.post(
+                API_URL, headers=api_headers,
+                data={"tid": TID, "idx": idx, "fsp": ""},
+                timeout=TIMEOUT,
+            )
+            data = r.json()
+        except Exception as exc:
+            print(f"[KLCC] page {idx} error: {exc}")
+            break
+
+        pag   = data.get("pagination", {}).get(TID, {})
+        sdk   = data.get("sdk", {}).get(TID, {})
+        pages = pag.get("pages", {})
+
+        if not pages:
+            break
+
+        for _pi, items in pages.items():
+            for item in items:
+                title = _clean(html_module.unescape(item.get("Page Name", "")))
+                if not title or title in seen:
                     continue
-                title = _clean(title_el.get_text())
-                if not _is_electronics_related(title):
-                    continue
-                date_el = card.select_one(".date, time, .period")
-                start, end = _date_range(_clean(date_el.get_text()) if date_el else "")
-                link_el = card.select_one("a[href]")
-                link = _abs_url(link_el["href"] if link_el else url, base)
+                seen.add(title)
+
+                url = item.get("Page Address", "").strip()
+
+                # Dates via xDataId → sdk lookup
+                xid       = item.get("xDataId", "")
+                sdk_entry = sdk.get(xid, {})
+                start = _parse_klcc_date(sdk_entry.get("startDate", ""))
+                end   = _parse_klcc_date(sdk_entry.get("endDate",   "")) or start
+
                 events.append(RawEvent(
-                    title=title, organizer="KLCC Convention Centre",
-                    location="Kuala Lumpur City Centre", venue="KLCC Convention Centre",
-                    start_date=start, end_date=end,
-                    source_url=link, source_site="KLCC Convention",
-                    tags=["venue", "exhibition", "kl"],
+                    title=title,
+                    organizer="KLCC Convention Centre",
+                    location="Kuala Lumpur City Centre",
+                    venue="Kuala Lumpur Convention Centre",
+                    start_date=start,
+                    end_date=end,
+                    source_url=url,
+                    source_site="KLCC Convention",
+                    tags=["venue", "convention", "kl"],
                 ))
-        except Exception:
-            pass
+
+    return events
+
+
+async def scrape_mvec(client: httpx.AsyncClient) -> list[RawEvent]:
+    """MVEC (Mid Valley Exhibition Centre) – calendar-kl.json"""
+    JSON_URL = "https://www.mvec.com.my/calendar-kl.json"
+    events: list[RawEvent] = []
+
+    try:
+        r    = await client.get(JSON_URL, headers=HEADERS, timeout=TIMEOUT)
+        data = r.json()
+    except Exception as exc:
+        print(f"[MVEC] fetch error: {exc}")
+        return events
+
+    for item in data:
+        # Strip HTML tags from event name (e.g. "24<sup>th</sup> Fair")
+        raw_name = item.get("event", "")
+        title    = _clean(BeautifulSoup(raw_name, "lxml").get_text())
+        if not title:
+            continue
+
+        date_str    = (item.get("datetime") or {}).get("date", "")
+        start, end  = _date_range(date_str)
+
+        organiser   = item.get("organiser") or {}
+        organizer   = _clean(organiser.get("name", ""))
+        website     = (organiser.get("website") or "").strip()
+        if website and not website.startswith("http"):
+            website = "https://" + website
+
+        events.append(RawEvent(
+            title=title,
+            organizer=organizer,
+            location="Kuala Lumpur",
+            venue="Mid Valley Exhibition Centre",
+            start_date=start,
+            end_date=end,
+            source_url=website or JSON_URL,
+            source_site="MVEC",
+            tags=["venue", "exhibition", "midvalley", "kl"],
+        ))
+
     return events
 
 
@@ -1035,6 +1125,7 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
     "Best Denki MY":        ("Tier2-Retail",     scrape_best_denki),
     "MITEC":                ("Tier3-Venue",      scrape_mitec),
     "KLCC Convention":      ("Tier3-Venue",      scrape_klcc_convention),
+    "MVEC":                 ("Tier3-Venue",      scrape_mvec),
     "PWTC":                 ("Tier3-Venue",      scrape_pwtc),
     "Mid Valley":           ("Tier3-Venue",      scrape_midvalley),
     "Sunway Pyramid":       ("Tier3-Venue",      scrape_sunway),
