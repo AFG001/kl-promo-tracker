@@ -549,32 +549,42 @@ async def scrape_mitec(client: httpx.AsyncClient) -> list[RawEvent]:
                                  ["venue", "exhibition", "kl"])
             events.extend(jld)
 
-            # Text-node date search: "D - D Month YYYY" anywhere on page
+            # Text-node date search: walk UP the DOM to find the card container,
+            # then look for the event title WITHIN that container.
             seen: set[str] = set()
             for text_node in soup.find_all(string=_DATE_TEXT_RE):
                 date_text = _clean(str(text_node))
                 start, end = _date_range(date_text)
                 if not start:
                     continue
-                # Nearest heading after/before this node
-                parent = text_node.parent
+
+                # Walk up from the text node's parent until we find a heading
+                node = text_node.parent
                 title = ""
-                for tag in ["h1","h2","h3","h4","h5","strong"]:
-                    heading = (parent.find_next(tag) or
-                               parent.find_previous(tag))
-                    if heading:
-                        title = _clean(heading.get_text())
+                for _ in range(7):  # max 7 levels up
+                    h = node.select_one("h1, h2, h3, h4, h5, .event-title, .title")
+                    if h:
+                        t = _clean(h.get_text())
+                        if len(t) > 5 and t != date_text:
+                            title = t
+                            break
+                    parent_tag = getattr(node, "parent", None)
+                    if not parent_tag or parent_tag.name in ("html", "body", "[document]"):
                         break
+                    node = parent_tag
+
                 if not title or len(title) < 5:
                     continue
+                # For MITEC venue, keep all events (broad keyword match)
                 if not _is_electronics_related(title):
                     continue
                 key = f"{title}|{start}"
                 if key in seen:
                     continue
                 seen.add(key)
-                link_el = parent.find_next("a", href=True)
-                link = _abs_url(link_el["href"], base) if link_el else url
+                link_node = node.select_one("a[href]") or text_node.parent.find_next("a", href=True)
+                link = _abs_url(link_node["href"], base) if link_node else url
+                print(f"    [MITEC] found: '{title[:50]}' {start}~{end}")
                 events.append(RawEvent(
                     title=title, organizer="MITEC",
                     location="Kuala Lumpur",
@@ -1041,15 +1051,24 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
 
 
 async def run_all_scrapers() -> dict[str, list[RawEvent]]:
+    """Run all scrapers in small concurrent batches to avoid rate-limiting."""
+    results: dict[str, list[RawEvent]] = {}
+    names   = list(SCRAPERS.keys())
+    BATCH   = 4   # run at most 4 sites concurrently
+
     async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
-        tasks = {name: asyncio.create_task(fn(client)) for name, (_, fn) in SCRAPERS.items()}
-        results: dict[str, list[RawEvent]] = {}
-        for name, task in tasks.items():
-            try:
-                results[name] = await task
-            except Exception as exc:
-                print(f"[scraper] {name} failed: {exc}")
-                results[name] = []
+        for i in range(0, len(names), BATCH):
+            batch = names[i:i + BATCH]
+            tasks = {name: asyncio.create_task(SCRAPERS[name][1](client)) for name in batch}
+            for name, task in tasks.items():
+                try:
+                    results[name] = await task
+                except Exception as exc:
+                    print(f"[scraper] {name} failed: {exc}")
+                    results[name] = []
+            if i + BATCH < len(names):
+                await asyncio.sleep(2)   # 2-second gap between batches
+
     return results
 
 
