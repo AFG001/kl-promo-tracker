@@ -244,6 +244,36 @@ body {
 
 .event-scraped-at { font-size: .68rem; color: var(--muted); text-align: right; }
 
+.btn-hide {
+  width: 100%;
+  padding: 7px 12px;
+  background: #fbe9e7;
+  color: var(--danger);
+  border: 1px solid #ffccbc;
+  border-radius: var(--radius);
+  font-size: .78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+  margin-top: 2px;
+}
+.btn-hide:hover { background: #ffccbc; border-color: #ff8a65; }
+
+.btn-restore {
+  padding: 3px 9px;
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
+  border-radius: 10px;
+  font-size: .71rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.btn-restore:hover { background: #ffe0b2; }
+
 /* ===== Status Bar ===== */
 .status-bar {
   height: var(--status-h);

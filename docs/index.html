@@ -55,7 +55,10 @@
       <label>Search</label>
       <input type="text" id="filter-search" placeholder="Title, organiser…" oninput="debounceSearch()" />
     </div>
-    <div class="filter-group stats-group" id="stats-label">Events: —</div>
+    <div class="filter-group stats-group">
+      <span id="stats-label">Events: —</span>
+      <button id="hidden-badge" class="btn-restore" onclick="restoreAllHidden()" style="display:none"></button>
+    </div>
   </div>
 
   <div class="main-layout">

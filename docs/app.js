@@ -15,6 +15,7 @@ const SITE_TIER = {
   "Best Denki MY":     "Tier2-Retail",
   "MITEC":             "Tier3-Venue",
   "KLCC Convention":   "Tier3-Venue",
+  "MVEC":              "Tier3-Venue",
   "PWTC":              "Tier3-Venue",
   "Mid Valley":        "Tier3-Venue",
   "Sunway Pyramid":    "Tier3-Venue",
@@ -28,6 +29,43 @@ const SITE_TIER = {
   "Lazada MY":         "Tier6-Online",
   "Shopee MY":         "Tier6-Online",
 };
+
+/* ===== Hidden events (localStorage) ===== */
+const HIDDEN_KEY = "kl_hidden";
+let hiddenIds = new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || "[]"));
+
+function _saveHidden() {
+  localStorage.setItem(HIDDEN_KEY, JSON.stringify([...hiddenIds]));
+  _updateHiddenBadge();
+}
+
+function _updateHiddenBadge() {
+  const badge = document.getElementById("hidden-badge");
+  if (!badge) return;
+  if (hiddenIds.size > 0) {
+    badge.textContent = `${hiddenIds.size} hidden  ↩ Restore`;
+    badge.style.display = "inline-flex";
+  } else {
+    badge.style.display = "none";
+  }
+}
+
+function hideEvent(id, title) {
+  hiddenIds.add(id);
+  _saveHidden();
+  applyFilters();
+  document.getElementById("side-panel").innerHTML = `
+    <div class="side-placeholder"><span>🗑</span><p>Event hidden.<br>Use <strong>Restore</strong> to undo.</p></div>`;
+  showToast(`Hidden: "${title}"`);
+}
+
+function restoreAllHidden() {
+  const count = hiddenIds.size;
+  hiddenIds.clear();
+  _saveHidden();
+  applyFilters();
+  showToast(`Restored ${count} hidden event${count !== 1 ? "s" : ""}`);
+}
 
 /* ===== Init ===== */
 document.addEventListener("DOMContentLoaded", async () => {
@@ -81,6 +119,7 @@ async function loadEvents() {
     });
 
     applyFilters();
+    _updateHiddenBadge();
 
     if (lastUpdated) {
       const dt = new Date(lastUpdated).toLocaleString("en-MY", {
@@ -104,6 +143,7 @@ function applyFilters() {
   filters.search   = document.getElementById("filter-search").value.toLowerCase();
 
   const filtered = allEvents.filter(e => {
+    if (hiddenIds.has(e.id)) return false;   // hidden by user
     const ep   = e.extendedProps || {};
     const site = ep.source_site || "";
     const tier = SITE_TIER[site] || "";
@@ -121,6 +161,7 @@ function applyFilters() {
   calendar.removeAllEvents();
   calendar.addEventSource(filtered);
   document.getElementById("stats-label").textContent = `Events: ${filtered.length}`;
+  _updateHiddenBadge();
 }
 
 function debounceSearch() {
@@ -159,6 +200,7 @@ function showDetail(event) {
       ${tagsHtml ? `<div class="event-tags">${tagsHtml}</div>` : ""}
       ${ep.source_url ? `<div class="event-source-link">🔗 <a href="${esc(ep.source_url)}" target="_blank" rel="noopener">View source page</a></div>` : ""}
       <div class="event-scraped-at">Updated: ${formatDateTime(ep.updated_at)}</div>
+      <button class="btn-hide" onclick="hideEvent('${esc(event.id)}', '${esc(event.title).replace(/'/g,"&#39;")}')">🗑 Hide this event</button>
     </div>`;
 }
 
