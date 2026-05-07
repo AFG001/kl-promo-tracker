@@ -401,28 +401,48 @@ async def scrape_senheng(client: httpx.AsyncClient) -> list[RawEvent]:
 
 
 async def scrape_harvey_norman(client: httpx.AsyncClient) -> list[RawEvent]:
+    """
+    Harvey Norman MY promotions.
+    Dates are embedded in <img alt="Title (DD Mon - DD Mon YYYY) - Promo Banner"> attributes.
+    This is in static HTML — no JS rendering needed.
+    """
     events: list[RawEvent] = []
     base = "https://www.harveynorman.com.my"
+    url  = f"{base}/promotions/catalogues-and-promotions.html"
     try:
-        soup = _soup(await _get(client, f"{base}/promotions"))
-        for card in soup.select(".promotion-item, .promo-block, article, .promo-card"):
-            title_el = card.select_one("h1, h2, h3, .title")
-            if not title_el:
+        soup = _soup(await _get(client, url))
+        seen: set[str] = set()
+
+        for img in soup.select("img[alt]"):
+            alt = img.get("alt", "")
+            # Pattern: "Promo Title (DD Mon - DD Mon YYYY)" or "(DD Mon YYYY)"
+            m = re.search(r"^(.+?)\s*\((\d{1,2}\s+\w+[^)]+\d{4})\)", alt)
+            if not m:
                 continue
-            title = _clean(title_el.get_text())
-            date_el = card.select_one(".date, .validity, .period, time")
-            start, end = _date_range(_clean(date_el.get_text()) if date_el else "")
-            link_el = card.select_one("a[href]")
-            link = _abs_url(link_el["href"] if link_el else "/promotions", base)
+            title    = _clean(m.group(1))
+            date_str = m.group(2).strip()
+            if not title or len(title) < 5:
+                continue
+            start, end = _date_range(date_str)
+            if not start:
+                continue
+            if title in seen:
+                continue
+            seen.add(title)
+
+            parent_a = img.find_parent("a")
+            link = _abs_url(parent_a["href"], base) if parent_a and parent_a.get("href") else url
+
             events.append(RawEvent(
-                title=title, organizer="Harvey Norman Malaysia",
+                title=title,
+                organizer="Harvey Norman Malaysia",
                 location="Kuala Lumpur / Malaysia",
                 start_date=start, end_date=end,
                 source_url=link, source_site="Harvey Norman MY",
                 tags=["electronics", "retail", "promotion"],
             ))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[scraper] Harvey Norman error: {exc}")
     return events
 
 
