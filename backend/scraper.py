@@ -43,9 +43,9 @@ ELEC_KEYWORDS = [
     "tech", "electronic", "gadget", "phone", "smartphone", "tv", "television",
     "audio", "appliance", "computer", "laptop", "camera", "fair", "expo",
     "digital", "home appliance", "pc fair", "consumer electronics",
-    "semicon", "semiconductor", "ict", "it fair", "smart home", "smart",
-    "innovation", "robotics", "automation", "gaming", "drone", "solar",
-    "electric", "battery", "charging", "wireless", "broadband", "cloud",
+    "semicon", "semiconductor", "ict", "it fair", "smart home",
+    "innovation", "gaming", "solar", "electric vehicle", "ev charging",
+    "robotics", "automation", "drone", "fintech", "digital economy",
 ]
 
 
