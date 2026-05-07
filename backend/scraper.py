@@ -25,7 +25,16 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
 TIMEOUT = httpx.Timeout(30.0)
 
@@ -413,10 +422,16 @@ async def scrape_harvey_norman(client: httpx.AsyncClient) -> list[RawEvent]:
     base = "https://www.harveynorman.com.my"
     url  = f"{base}/promotions/catalogues-and-promotions.html"
     try:
-        soup = _soup(await _get(client, url))
+        html = await _get(client, url)
+        # Debug: show response size and first tag to detect bot-block pages
+        preview = html[:200].replace("\n", " ")
+        print(f"    [HN debug] html_len={len(html)} preview={preview!r}")
+        soup = _soup(html)
+        all_imgs = soup.select("img[alt]")
+        print(f"    [HN debug] img[alt] count={len(all_imgs)}")
         seen: set[str] = set()
 
-        for img in soup.select("img[alt]"):
+        for img in all_imgs:
             alt = img.get("alt", "")
             # Pattern: "Promo Title (DD Mon - DD Mon YYYY)" or "(DD Mon YYYY)"
             m = re.search(r"^(.+?)\s*\((\d{1,2}\s+\w+[^)]+\d{4})\)", alt)
@@ -521,7 +536,11 @@ async def scrape_mitec(client: httpx.AsyncClient) -> list[RawEvent]:
     events: list[RawEvent] = []
     for url in [f"{base}/", f"{base}/events/"]:
         try:
-            soup = _soup(await _get(client, url))
+            html = await _get(client, url)
+            print(f"    [MITEC debug] url={url} html_len={len(html)}")
+            soup = _soup(html)
+            nodes = soup.find_all(string=_DATE_TEXT_RE)
+            print(f"    [MITEC debug] date_text_nodes={len(nodes)} examples={[str(n)[:40] for n in nodes[:3]]}")
 
             # JSON-LD first
             jld = _jsonld_events(soup, url, "MITEC", "MITEC",
