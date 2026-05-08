@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 # ── path setup ────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ def to_calendar_event(e: dict) -> dict:
 
 
 async def main():
-    started = datetime.utcnow()
+    started = datetime.now(timezone.utc)
     print(f"[scrape_job] Started at {started.isoformat()} UTC")
 
     db.init_db()
@@ -138,7 +138,7 @@ async def main():
 
     DOCS_DIR.mkdir(exist_ok=True)
     meta = {
-        "generated_at": started.isoformat() + "Z",
+        "generated_at": started.isoformat().replace("+00:00", "Z"),
         "total":        len(calendar_events),
     }
 
@@ -148,7 +148,7 @@ async def main():
         json.dump(output, f, ensure_ascii=False, separators=(",", ":"))
 
     print(f"[scrape_job] events.json written — {len(calendar_events)} events total")
-    print(f"[scrape_job] Finished at {datetime.utcnow().isoformat()} UTC")
+    print(f"[scrape_job] Finished at {datetime.now(timezone.utc).isoformat()} UTC")
 
 
 if __name__ == "__main__":

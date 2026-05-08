@@ -1257,11 +1257,15 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
     "Senheng":              ("Tier2-Retail",     scrape_senheng),
     "Harvey Norman MY":     ("Tier2-Retail",     scrape_harvey_norman),
     "Courts MY":            ("Tier2-Retail",     scrape_courts),
-    "TMT":                  ("Tier2-Retail",     scrape_tmt),
+    # TMT (tmt.my) uses a fully JS-rendered custom platform — no static API.
+    # Re-enable when Playwright is available.
+    # "TMT":                ("Tier2-Retail",     scrape_tmt),
     "MITEC":                ("Tier3-Venue",      scrape_mitec),
     "KLCC Convention":      ("Tier3-Venue",      scrape_klcc_convention),
     "MVEC":                 ("Tier3-Venue",      scrape_mvec),
-    "ExhibitionsForYou":    ("Tier3-Venue",      scrape_exhibitionsforyou),
+    # ExhibitionsForYou blocks GitHub Actions IPs (Cloudflare 403).
+    # Re-enable when Playwright / residential proxy is available.
+    # "ExhibitionsForYou":  ("Tier3-Venue",      scrape_exhibitionsforyou),
     "PWTC":                 ("Tier3-Venue",      scrape_pwtc),
     "Mid Valley":           ("Tier3-Venue",      scrape_midvalley),
     "Sunway Pyramid":       ("Tier3-Venue",      scrape_sunway),
