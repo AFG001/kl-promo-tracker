@@ -14,7 +14,7 @@ import html as html_module
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from bs4 import BeautifulSoup
@@ -954,8 +954,7 @@ async def scrape_myceb(client: httpx.AsyncClient) -> list[RawEvent]:
     BASE   = "https://malaysia.simpleviewcrm.com"
     events: list[RawEvent] = []
 
-    from datetime import date
-    today    = date.today()
+    today    = datetime.now().date()
     start_dt = today.strftime("%-m/%-d/%Y")         # "5/8/2026"
     end_dt   = (today + timedelta(days=365)).strftime("%-m/%-d/%Y")
 

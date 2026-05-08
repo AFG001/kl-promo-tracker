@@ -461,16 +461,48 @@ async def scrape_myceb_pw() -> list[RawEvent]:
             await browser.close()
             return events
 
-        # Wait for all dynamic content (SimpleView embed takes time)
+        # Wait for initial load
         try:
             await page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:
             pass
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(3000)
+
+        # The calendar requires a dropdown selection before events load.
+        # Find and interact with "Please select one" <select> element.
         try:
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(3000)
-            await page.evaluate("window.scrollTo(0, 0)")
+            selects = await page.query_selector_all("select")
+            print(f"    [MyCEB PW] select elements: {len(selects)}")
+            for sel in selects:
+                opts = await sel.evaluate(
+                    "el => [...el.options].map(o => ({v: o.value, t: o.text.trim()}))"
+                )
+                print(f"      options: {opts[:10]}")
+                # Try each non-empty option to trigger event loading
+                for opt in opts:
+                    if not opt["v"]:
+                        continue
+                    print(f"      selecting: {opt['v']!r} ({opt['t']!r})")
+                    await sel.select_option(opt["v"])
+                    await page.wait_for_timeout(3000)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=8_000)
+                    except Exception:
+                        pass
+                    body_after = await page.inner_text("body")
+                    print(f"      body after select ({len(body_after)} chars): {body_after[:600]!r}")
+                    # If we see event-like content (year + more text), stop
+                    if len(body_after) > 400 and re.search(r"\b20\d{2}\b", body_after):
+                        break
+        except Exception as exc:
+            print(f"    [MyCEB PW] dropdown error: {exc}")
+
+        # Also try clicking any visible button that might load events
+        try:
+            btns = await page.query_selector_all("button, input[type='submit'], a[class*='btn']")
+            for btn in btns[:5]:
+                btn_text = _clean(await btn.inner_text())
+                print(f"    [MyCEB PW] button: {btn_text!r}")
         except Exception:
             pass
 
@@ -479,13 +511,8 @@ async def scrape_myceb_pw() -> list[RawEvent]:
         print(f"    [MyCEB PW] {len(all_frames)} frames total")
         for frame in all_frames:
             furl = frame.url
-            print(f"      frame: {furl[:100]}")
-            try:
-                ftext = await frame.inner_text("body")
-                if ftext and len(ftext) > 100:
-                    print(f"      text ({len(ftext)} chars): {ftext[:500]!r}")
-            except Exception:
-                pass
+            if furl != url:
+                print(f"      frame: {furl[:100]}")
 
         # Try to extract events from any frame that mentions "2026" or event patterns
         for frame in all_frames:
