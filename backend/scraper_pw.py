@@ -454,25 +454,38 @@ async def scrape_myceb_pw() -> list[RawEvent]:
         browser = await p.chromium.launch(headless=True)
         page    = await _new_page(browser)
 
-        # /events/calendar-of-events is the actual listing page (confirmed
-        # from "view more" link found on /exhibitions).
+        # Intercept XHR/fetch responses to find the hidden JSON API endpoint
+        api_responses: list[dict] = []
+
+        async def _on_response(resp):
+            ct = resp.headers.get("content-type", "")
+            if "json" in ct and resp.status < 400:
+                try:
+                    body = await resp.text()
+                    api_responses.append({"url": resp.url, "body": body[:600]})
+                except Exception:
+                    pass
+
+        page.on("response", _on_response)
+
+        # /events/calendar-of-events is the confirmed listing page
         for path in [
             "/events/calendar-of-events",
             "/exhibitions",
             "/events",
         ]:
             url = BASE + path
+            api_responses.clear()
             if not await _safe_goto(page, url):
                 continue
 
-            # Debug: show page title to confirm what loaded
             try:
                 title_txt = await page.title()
                 print(f"    [MyCEB PW] {path} → title: {title_txt!r}")
             except Exception:
                 pass
 
-            # Wait for dynamic content, then scroll to trigger lazy-loads
+            # Wait + scroll to trigger lazy-loaded content
             try:
                 await page.wait_for_load_state("networkidle", timeout=15_000)
             except Exception:
@@ -485,10 +498,20 @@ async def scrape_myceb_pw() -> list[RawEvent]:
             except Exception:
                 pass
 
-            # Debug: dump first 4000 chars of rendered DOM to understand structure
+            # Debug: show JSON API calls made during page load
+            if api_responses:
+                print(f"    [MyCEB PW] {path} → {len(api_responses)} JSON responses:")
+                for r in api_responses[:6]:
+                    print(f"      url={r['url'][:100]}")
+                    print(f"      body={r['body'][:200]!r}")
+            else:
+                print(f"    [MyCEB PW] {path} → no JSON API calls detected")
+
+            # Debug: dump rendered DOM body (first 3000 chars)
             try:
-                dom_html = await page.content()
-                print(f"    [MyCEB PW] {path} DOM snippet:\n{dom_html[dom_html.find('<body'):dom_html.find('<body')+4000]!r}")
+                dom = await page.content()
+                body_start = dom.find("<body")
+                print(f"    [MyCEB PW] DOM snippet: {dom[body_start:body_start+3000]!r}")
             except Exception as exc:
                 print(f"    [MyCEB PW] content() error: {exc}")
 

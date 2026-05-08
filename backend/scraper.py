@@ -1462,7 +1462,9 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
     "HOMEDEC":              ("Tier1-Exhibition", scrape_homedec),
     "HomeLove MY":          ("Tier1-Exhibition", scrape_homelove),
     "PIKOM":                ("Tier1-Exhibition", scrape_pikom),
-    "Expolah":              ("Tier1-Exhibition", scrape_expolah),
+    # Expolah disabled: category URL param is ignored server-side; site returns
+    # all events (concerts, food fairs, pet expos) — no tech filtering possible.
+    # "Expolah":            ("Tier1-Exhibition", scrape_expolah),
     "MTE":                  ("Tier1-Exhibition", scrape_mte),
     "Senheng":              ("Tier2-Retail",     scrape_senheng),
     "Harvey Norman MY":     ("Tier2-Retail",     scrape_harvey_norman),
