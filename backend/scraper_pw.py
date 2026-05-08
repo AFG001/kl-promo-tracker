@@ -378,27 +378,36 @@ async def scrape_10times_pw() -> list[RawEvent]:
                     continue
                 seen.add(title)
 
-                # date
+                # date — try specific selector first, fall back to full card text
+                date_raw = ""
                 try:
                     date_el = await card.query_selector(
                         "[class*='date'], [class*='period'], time, "
-                        "[class*='when'], [class*='timing']"
+                        "[class*='when'], [class*='timing'], [class*='schedule']"
                     )
-                    date_raw = _clean(await date_el.inner_text()) if date_el else ""
+                    if date_el:
+                        date_raw = _clean(await date_el.inner_text())
                 except Exception:
-                    date_raw = ""
-                date_raw = date_raw.replace(",", " ")
-                start, end = _date_range(date_raw)
+                    pass
+                if not date_raw:
+                    try:
+                        # Scan full card text for any date pattern
+                        date_raw = await card.inner_text()
+                    except Exception:
+                        pass
+                start, end = _date_range(date_raw.replace(",", " "))
 
                 # venue / location
+                venue = ""
                 try:
                     venue_el = await card.query_selector(
                         "[class*='venue'], [class*='location'], "
                         "[class*='city'], [class*='place']"
                     )
-                    venue = _clean(await venue_el.inner_text()) if venue_el else ""
+                    if venue_el:
+                        venue = _clean(await venue_el.inner_text())
                 except Exception:
-                    venue = ""
+                    pass
 
                 # link
                 try:
@@ -456,6 +465,13 @@ async def scrape_myceb_pw() -> list[RawEvent]:
             if not await _safe_goto(page, url):
                 continue
 
+            # Debug: show page title to confirm what loaded
+            try:
+                title_txt = await page.title()
+                print(f"    [MyCEB PW] {path} → title: {title_txt!r}")
+            except Exception:
+                pass
+
             # Wait for dynamic content
             try:
                 await page.wait_for_selector(
@@ -465,11 +481,28 @@ async def scrape_myceb_pw() -> list[RawEvent]:
             except Exception:
                 pass
 
+            # Debug: dump top-level class names on the page to identify selectors
+            try:
+                classes = await page.evaluate(
+                    "() => [...new Set([...document.querySelectorAll('[class]')]"
+                    ".map(el => el.className).filter(c => typeof c === 'string'))].slice(0,30)"
+                )
+                print(f"    [MyCEB PW] sample classes: {classes[:15]}")
+            except Exception:
+                pass
+
             cards = await page.query_selector_all(
                 "[class*='event-card'], [class*='event-item'], "
                 "[class*='calendar-item'], [class*='card'], "
                 "article, li[class*='event']"
             )
+            print(f"    [MyCEB PW] cards found: {len(cards)}")
+            if not cards:
+                # Try broader: any li or div that contains a heading
+                cards = await page.query_selector_all("li, div.item, div.row")
+                cards = [c for c in cards[:100]
+                         if await c.query_selector("h2, h3, h4")]
+                print(f"    [MyCEB PW] fallback cards: {len(cards)}")
             if not cards:
                 break
 
@@ -544,7 +577,8 @@ async def scrape_myceb_pw() -> list[RawEvent]:
 
 _PW_SCRAPERS: list[tuple[str, callable]] = [
     ("ExhibitionsForYou", scrape_exhibitionsforyou_pw),
-    ("TMT",               scrape_tmt_pw),
+    # TMT disabled: tmt.my consistently times out (networkidle never reached).
+    # ("TMT",             scrape_tmt_pw),
     ("10times",           scrape_10times_pw),
     ("MyCEB",             scrape_myceb_pw),
 ]

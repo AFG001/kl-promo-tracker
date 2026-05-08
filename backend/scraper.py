@@ -755,26 +755,73 @@ async def scrape_expolah(client: httpx.AsyncClient) -> list[RawEvent]:
                 else f"{base}/events/?category={category}&page={page}"
             )
             try:
-                soup = _soup(await _get(client, url))
+                html = await _get(client, url)
+                soup = _soup(html)
             except Exception as exc:
                 print(f"[Expolah] {category} page {page} error: {exc}")
                 break
 
-            # Try common event-card selectors first, then fall back to h3 parents
+            # Debug: report page structure on first page of each category
+            if page == 1:
+                all_h3 = soup.find_all("h3")
+                all_h2 = soup.find_all("h2")
+                print(
+                    f"[Expolah debug] {category} → "
+                    f"html_len={len(html)} h2={len(all_h2)} h3={len(all_h3)}"
+                )
+                # Show first 5 h3 texts to understand structure
+                for i, h in enumerate(all_h3[:5]):
+                    print(f"  h3[{i}]: {_clean(h.get_text())[:80]!r}")
+
+            # Strategy 1: common event-card containers
             cards = soup.select(
                 "article, .event-card, .event-item, "
                 "[class*='event-card'], [class*='event-item'], "
                 ".tribe-events-calendar-list__event-row, li[class*='event']"
             )
+
+            # Strategy 2: any h3 whose text looks like an event title (has year or
+            # is long enough), use the h3 element itself as the anchor
             if not cards:
-                # Generic: any block element that contains an h3 and a 4-digit year
-                cards = [
-                    el.parent
-                    for el in soup.find_all("h3")
-                    if el.parent and re.search(r"\b20\d{2}\b", el.parent.get_text())
-                ]
-            if not cards:
-                break
+                h3_anchors = soup.find_all("h3")
+                print(f"[Expolah debug] {category} p{page}: no cards → "
+                      f"trying {len(h3_anchors)} h3 anchors")
+                for h3 in h3_anchors:
+                    title = _clean(h3.get_text())
+                    if not title or len(title) < 6:
+                        continue
+                    if not _is_electronics_related(title):
+                        continue
+                    if title in seen:
+                        continue
+                    seen.add(title)
+                    # Date: search ancestor chain for year text
+                    container = h3.parent or h3
+                    ctx_text  = _clean(container.get_text()).replace(",", " ")
+                    start, end = _date_range(ctx_text)
+
+                    venue_el = container.select_one(
+                        "[class*='venue'], [class*='location'], [class*='address']"
+                    )
+                    venue = _clean(venue_el.get_text()) if venue_el else ""
+
+                    link_el = h3.find("a", href=True) or container.find("a", href=True)
+                    link    = _abs_url(link_el["href"], base) if link_el else url
+
+                    events.append(RawEvent(
+                        title=title,
+                        organizer="",
+                        location="Kuala Lumpur",
+                        venue=venue,
+                        start_date=start,
+                        end_date=end,
+                        source_url=link,
+                        source_site="Expolah",
+                        tags=["exhibition", "kl", "malaysia"],
+                    ))
+                if not events and page == 1:
+                    break  # nothing on first page → skip remaining pages
+                break  # h3 strategy doesn't paginate (flat list)
 
             found_on_page = False
             for card in cards:
@@ -828,16 +875,28 @@ async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
     base = "https://www.mte.org.my"
     events: list[RawEvent] = []
     try:
-        soup = _soup(await _get(client, f"{base}/index.php"))
+        url = f"{base}/"
+        html = await _get(client, url)
+        soup = _soup(html)
+
+        # Debug: report page structure
+        h_counts = {t: len(soup.find_all(t)) for t in ["h1", "h2", "h3"]}
+        print(
+            f"[MTE debug] html_len={len(html)} "
+            f"h1={h_counts['h1']} h2={h_counts['h2']} h3={h_counts['h3']}"
+        )
+        for i, h in enumerate(soup.find_all(["h1", "h2", "h3"])[:8]):
+            print(f"  {h.name}[{i}]: {_clean(h.get_text())[:80]!r}")
 
         # First try: JSON-LD structured data
         jld = _jsonld_events(
-            soup, f"{base}/index.php",
+            soup, url,
             "Malaysia Technology Expo", "MTE",
             "Kuala Lumpur", "World Trade Centre Kuala Lumpur",
             ["exhibition", "technology", "innovation", "kl"],
         )
         if jld:
+            print(f"[MTE debug] found {len(jld)} JSON-LD events")
             return [e for e in jld if _is_electronics_related(e.title)]
 
         # Fallback: scan h2/h3 elements for "MTE" or "Malaysia Technology Expo"
