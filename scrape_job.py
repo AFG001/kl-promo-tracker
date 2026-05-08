@@ -36,6 +36,7 @@ except ImportError:
     pass
 
 from scraper import run_all_scrapers
+from scraper_pw import run_pw_scrapers
 from simple_parser import parse_events
 import database as db
 
@@ -131,7 +132,33 @@ async def main():
         total_new     += n
         total_updated += u
 
-    print(f"\n[scrape_job] Scrape done: +{total_new} new, ~{total_updated} updated")
+    print(f"\n[scrape_job] Static scrape done: +{total_new} new, ~{total_updated} updated")
+
+    # ── Playwright scrapers (JS-rendered / Cloudflare-protected sites) ────────
+    print("\n[scrape_job] Running Playwright scrapers…")
+    pw_results = await run_pw_scrapers()
+    for site_name, raw_events in pw_results.items():
+        if not raw_events:
+            print(f"  [PW] [{site_name}] 0 raw events")
+            continue
+        parsed = parse_events(raw_events)
+        print(f"  [PW] [{site_name}] raw={len(raw_events)} parsed={len(parsed)}")
+        for raw in raw_events[:3]:
+            print(f"    raw: '{raw.title[:60]}' start='{raw.start_date}'")
+        n = u = 0
+        for event in parsed:
+            doc_id, is_new = db.upsert_event(event)
+            event["id"] = doc_id
+            fresh_events.append(event)
+            if is_new:
+                n += 1
+            else:
+                u += 1
+        print(f"  [PW] [{site_name}] +{n} new, ~{u} updated")
+        total_new     += n
+        total_updated += u
+
+    print(f"\n[scrape_job] All done: +{total_new} new, ~{total_updated} updated")
 
     # ── export events.json (fresh data only, ignores stale Firestore records) ──
     calendar_events = [to_calendar_event(e) for e in fresh_events]

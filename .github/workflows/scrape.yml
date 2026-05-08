@@ -22,8 +22,20 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -r backend/requirements.txt
+
+      # Cache Chromium binary (~230 MB) so subsequent runs skip the download
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: playwright-${{ runner.os }}-
+
+      # Install Chromium + system deps (fast if cached; ~3 min on first run)
+      - name: Install Playwright browser
+        run: playwright install chromium --with-deps
 
       - name: Run scraper
         env:
