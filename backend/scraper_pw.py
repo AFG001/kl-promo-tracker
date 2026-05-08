@@ -442,9 +442,11 @@ async def scrape_10times_pw() -> list[RawEvent]:
 
 async def scrape_myceb_pw() -> list[RawEvent]:
     """
-    myceb.com.my – official Malaysia MICE authority.
-    JS-rendered; Playwright needed. 34 exhibitions + 298 conventions listed.
-    Filters to electronics/tech via _is_electronics_related().
+    MyCEB calendar via Playwright.
+    MyCEB uses xtopia.io CMS + SimpleView CRM embed.
+    Events appear to be in an iframe or via SimpleView's sched API.
+    This function: loads the page, reads all Playwright frames (incl. iframes),
+    and harvests event text from whichever frame contains event data.
     """
     events: list[RawEvent] = []
     seen:   set[str] = set()
@@ -454,102 +456,81 @@ async def scrape_myceb_pw() -> list[RawEvent]:
         browser = await p.chromium.launch(headless=True)
         page    = await _new_page(browser)
 
-        # Capture ALL requests (URL + method) to find the content-loading API
-        all_reqs: list[str] = []
+        url = BASE + "/events/calendar-of-events"
+        if not await _safe_goto(page, url):
+            await browser.close()
+            return events
 
-        async def _on_request(req):
-            all_reqs.append(f"{req.method} {req.url}")
+        # Wait for all dynamic content (SimpleView embed takes time)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=20_000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(5000)
+        try:
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(3000)
+            await page.evaluate("window.scrollTo(0, 0)")
+        except Exception:
+            pass
 
-        page.on("request", _on_request)
+        # Inspect ALL Playwright frames (iframes load as separate frames)
+        all_frames = page.frames
+        print(f"    [MyCEB PW] {len(all_frames)} frames total")
+        for frame in all_frames:
+            furl = frame.url
+            print(f"      frame: {furl[:100]}")
+            try:
+                ftext = await frame.inner_text("body")
+                if ftext and len(ftext) > 100:
+                    print(f"      text ({len(ftext)} chars): {ftext[:500]!r}")
+            except Exception:
+                pass
 
-        # /events/calendar-of-events is the confirmed listing page
-        for path in ["/events/calendar-of-events"]:
-            url = BASE + path
-            all_reqs.clear()
-            if not await _safe_goto(page, url):
+        # Try to extract events from any frame that mentions "2026" or event patterns
+        for frame in all_frames:
+            try:
+                ftext = await frame.inner_text("body")
+            except Exception:
+                continue
+            if not re.search(r"\b20\d{2}\b", ftext):
                 continue
 
+            # Extract event blocks using JS inside the frame
             try:
-                title_txt = await page.title()
-                print(f"    [MyCEB PW] {path} → title: {title_txt!r}")
-            except Exception:
-                pass
-
-            # Wait for networkidle, then extra time for lazy-load
-            try:
-                await page.wait_for_load_state("networkidle", timeout=20_000)
-            except Exception:
-                pass
-            await page.wait_for_timeout(5000)   # extra 5 s for dynamic modules
-            try:
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(3000)
-            except Exception:
-                pass
-
-            # Print all network requests (reveals hidden API)
-            print(f"    [MyCEB PW] {len(all_reqs)} requests:")
-            for r in all_reqs:
-                if not any(ext in r for ext in [".jpg", ".png", ".svg", ".css", ".woff"]):
-                    print(f"      {r[:130]}")
-
-            # Visible page text (much more informative than raw HTML)
-            try:
-                body_text = await page.inner_text("body")
-                print(f"    [MyCEB PW] body text (2000 chars): {body_text[:2000]!r}")
-            except Exception as exc:
-                print(f"    [MyCEB PW] inner_text error: {exc}")
-
-            break   # only one path needed for diagnosis
-
-            # MyCEB uses X-Theme/Cornerstone with UUID-based class names —
-            # no semantic selectors work.  Instead, use JS to harvest all
-            # <a> links that look like event detail pages, then pull the
-            # surrounding block text for title + date context.
-            try:
-                raw_links = await page.evaluate("""
+                items = await frame.evaluate("""
                 () => {
-                    const results = [];
-                    document.querySelectorAll('a[href]').forEach(a => {
-                        const href = a.getAttribute('href') || '';
-                        const text = (a.textContent || '').trim();
-                        if (text.length < 8) return;
-                        const looksLikeEvent =
-                            /\\/events?\\/|\\/exhibitions?\\/|\\/conventions?\\/|calendar/i.test(href) ||
-                            /\\b20\\d{2}\\b/.test(text);
-                        if (!looksLikeEvent) return;
-                        const block = a.closest('div, li, article, section') || a.parentElement;
-                        const ctx = block ? block.innerText.trim().slice(0, 300) : '';
-                        results.push({ title: text, href, context: ctx });
+                    const rows = [];
+                    // SimpleView calendar typically uses table rows or list items
+                    const candidates = [
+                        ...document.querySelectorAll('tr, li, .event, [class*="event"], [class*="calendar"]')
+                    ];
+                    candidates.forEach(el => {
+                        const text = (el.innerText || '').trim();
+                        if (text.length > 15 && /\\b20\\d{2}\\b/.test(text)) {
+                            rows.push(text.slice(0, 300));
+                        }
                     });
-                    return results.slice(0, 60);
+                    return rows.slice(0, 50);
                 }
                 """)
-            except Exception as exc:
-                print(f"    [MyCEB PW] JS evaluate error: {exc}")
-                raw_links = []
+                print(f"    [MyCEB PW] frame {frame.url[:60]} → {len(items)} event rows")
+                for row in items[:5]:
+                    print(f"      {row[:120]!r}")
+            except Exception:
+                items = []
 
-            print(f"    [MyCEB PW] {path} → {len(raw_links)} candidate links")
-            for item in (raw_links or [])[:5]:
-                print(f"      title={item['title'][:60]!r}  href={item['href'][:80]!r}")
-                print(f"      ctx={item['context'][:120]!r}")
-
-            found = False
-            for item in (raw_links or []):
-                title = _clean(item.get("title", ""))
-                if not title or len(title) < 8 or title in seen:
+            for row_text in items:
+                title_m = re.search(r"[A-Z][A-Za-z0-9 &:,'-]{15,}", row_text)
+                if not title_m:
+                    continue
+                title = title_m.group().strip()
+                if title in seen:
                     continue
                 if not _is_electronics_related(title):
                     continue
                 seen.add(title)
-                found = True
-
-                ctx = item.get("context", "").replace(",", " ")
-                start, end = _date_range(ctx)
-
-                href = item.get("href", "")
-                link = href if href.startswith("http") else (BASE + href if href else url)
-
+                start, end = _date_range(row_text.replace(",", " "))
                 events.append(RawEvent(
                     title=title,
                     organizer="MyCEB",
@@ -557,13 +538,10 @@ async def scrape_myceb_pw() -> list[RawEvent]:
                     venue="",
                     start_date=start,
                     end_date=end,
-                    source_url=link,
+                    source_url=url,
                     source_site="MyCEB",
                     tags=["exhibition", "mice", "kl", "malaysia"],
                 ))
-
-            if found or raw_links:
-                break   # got data from this path — don't try more URLs
 
         await browser.close()
 

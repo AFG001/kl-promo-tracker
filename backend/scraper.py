@@ -944,6 +944,78 @@ async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
     return events
 
 
+async def scrape_myceb(client: httpx.AsyncClient) -> list[RawEvent]:
+    """
+    MyCEB calendar via SimpleView CRM (malaysia.simpleviewcrm.com).
+    SimpleView is the standard CRM platform used by convention bureaus worldwide.
+    MyCEB's event listing page makes requests to this subdomain for file assets,
+    confirming it uses SimpleView. Try the standard /sched/results.cfm endpoint.
+    """
+    BASE   = "https://malaysia.simpleviewcrm.com"
+    events: list[RawEvent] = []
+
+    from datetime import date
+    today    = date.today()
+    start_dt = today.strftime("%-m/%-d/%Y")         # "5/8/2026"
+    end_dt   = (today + timedelta(days=365)).strftime("%-m/%-d/%Y")
+
+    test_urls = [
+        f"{BASE}/sched/results.cfm?type=calendar&startdate={start_dt}&enddate={end_dt}",
+        f"{BASE}/sched/results.cfm?startdate={start_dt}&enddate={end_dt}",
+        f"{BASE}/sched/results.cfm",
+    ]
+
+    for url in test_urls:
+        try:
+            html = await _get(client, url)
+        except Exception as exc:
+            print(f"[MyCEB SV] {url[:80]} error: {exc}")
+            continue
+        print(f"[MyCEB SV] {url[:90]} → {len(html)} bytes snippet={html[:200]!r}")
+        if len(html) < 500:
+            continue   # empty / redirect
+
+        soup  = _soup(html)
+        # First try JSON-LD
+        jld = _jsonld_events(
+            soup, url, "MyCEB", "MyCEB",
+            "Kuala Lumpur", "", ["exhibition", "mice", "kl"],
+        )
+        if jld:
+            print(f"[MyCEB SV] found {len(jld)} JSON-LD events")
+            events.extend(e for e in jld if _is_electronics_related(e.title))
+            break
+
+        # Fallback: look for event rows with a year in them
+        for row in soup.find_all(["tr", "li", "div", "article"]):
+            row_text = _clean(row.get_text())
+            if not re.search(r"\b20\d{2}\b", row_text):
+                continue
+            title_el = row.find(["h2", "h3", "h4", "a", "strong", "b"])
+            if not title_el:
+                continue
+            title = _clean(title_el.get_text())
+            if not title or len(title) < 10:
+                continue
+            if not _is_electronics_related(title):
+                continue
+            start, end = _date_range(row_text.replace(",", " "))
+            link_el = row.find("a", href=True)
+            link    = _abs_url(link_el["href"], BASE) if link_el else url
+            events.append(RawEvent(
+                title=title, organizer="MyCEB",
+                location="Kuala Lumpur", venue="",
+                start_date=start, end_date=end,
+                source_url=link, source_site="MyCEB",
+                tags=["exhibition", "mice", "kl", "malaysia"],
+            ))
+        if events:
+            break
+
+    print(f"[MyCEB SV] total {len(events)} events")
+    return events
+
+
 async def scrape_klcc_convention(client: httpx.AsyncClient) -> list[RawEvent]:
     """KLCC Convention Centre – What's On via XTOPIA CMS internal API."""
     base    = "https://www.klccconventioncentre.com"
@@ -1466,6 +1538,7 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
     # all events (concerts, food fairs, pet expos) — no tech filtering possible.
     # "Expolah":            ("Tier1-Exhibition", scrape_expolah),
     "MTE":                  ("Tier1-Exhibition", scrape_mte),
+    "MyCEB":                ("Tier1-Exhibition", scrape_myceb),
     "Senheng":              ("Tier2-Retail",     scrape_senheng),
     "Harvey Norman MY":     ("Tier2-Retail",     scrape_harvey_norman),
     "Courts MY":            ("Tier2-Retail",     scrape_courts),
