@@ -454,12 +454,11 @@ async def scrape_myceb_pw() -> list[RawEvent]:
         browser = await p.chromium.launch(headless=True)
         page    = await _new_page(browser)
 
-        # Try the dedicated exhibitions page first (confirmed link from nav),
-        # then fall back to events calendar URLs
+        # /events/calendar-of-events is the actual listing page (confirmed
+        # from "view more" link found on /exhibitions).
         for path in [
+            "/events/calendar-of-events",
             "/exhibitions",
-            "/conventions",
-            "/events?type=exhibition",
             "/events",
         ]:
             url = BASE + path

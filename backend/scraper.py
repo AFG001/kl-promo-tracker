@@ -783,17 +783,21 @@ async def scrape_expolah(client: httpx.AsyncClient) -> list[RawEvent]:
                 ".tribe-events-calendar-list__event-row, li[class*='event']"
             )
 
-            # Strategy 2: any h3 whose text looks like an event title (has year or
-            # is long enough), use the h3 element itself as the anchor
+            # Strategy 2: any h3 whose text looks like an event title.
+            # We're already on a category=technology / trade-fairs page so
+            # skip _is_electronics_related() — it's already filtered upstream.
             if not cards:
                 h3_anchors = soup.find_all("h3")
                 print(f"[Expolah debug] {category} p{page}: no cards → "
                       f"trying {len(h3_anchors)} h3 anchors")
+                # Print first 15 h3 texts for diagnostic
+                print(f"  h3 titles: {[_clean(h.get_text())[:60] for h in h3_anchors[:15]]}")
                 for h3 in h3_anchors:
                     title = _clean(h3.get_text())
-                    if not title or len(title) < 6:
+                    if not title or len(title) < 8:
                         continue
-                    if not _is_electronics_related(title):
+                    # Skip nav/footer items (short or all-caps menu labels)
+                    if title.isupper() and len(title) < 40:
                         continue
                     if title in seen:
                         continue
@@ -905,25 +909,48 @@ async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
             print(f"[MTE debug] found {len(jld)} JSON-LD events")
             return [e for e in jld if _is_electronics_related(e.title)]
 
-        # Fallback: scan h2/h3 elements for "MTE" or "Malaysia Technology Expo"
-        for heading in soup.find_all(["h1", "h2", "h3"]):
+        # Fallback: scan headings for "MTE" or "Malaysia Technology Expo".
+        # The MTE site puts the event title and date in SEPARATE sibling
+        # headings, so we scan the next few headings for a date if the
+        # parent container doesn't contain one.
+        all_headings = soup.find_all(["h1", "h2", "h3"])
+        for i, heading in enumerate(all_headings):
             h_text = _clean(heading.get_text())
-            if not re.search(r"Malaysia Technology Expo|MTE\s+20\d{2}", h_text, re.I):
+            if not re.search(r"Malaysia Technology Expo|MTE[\s(].*20\d{2}", h_text, re.I):
                 continue
 
-            # Look for date pattern in surrounding text (parent + siblings)
+            # 1. Try the parent container text first
             container = heading.parent or heading
-            ctx_text  = _clean(container.get_text())
-            start, end = _date_range(ctx_text.replace(",", " "))
+            ctx_text  = _clean(container.get_text()).replace(",", " ")
+            start, end = _date_range(ctx_text)
+
+            # 2. Title and date are separate headings — scan next 4 siblings
             if not start:
+                for sibling in all_headings[i + 1 : i + 5]:
+                    sib_text = _clean(sibling.get_text()).replace(",", " ")
+                    s, e = _date_range(sib_text)
+                    if s:
+                        start, end = s, e
+                        break
+
+            # 3. Also try scanning next paragraph siblings for a date
+            if not start:
+                for sib in heading.find_all_next(["p", "div", "span"], limit=6):
+                    sib_text = _clean(sib.get_text()).replace(",", " ")
+                    s, e = _date_range(sib_text)
+                    if s:
+                        start, end = s, e
+                        break
+
+            if not start:
+                print(f"[MTE debug] heading found but no date: {h_text[:80]!r}")
                 continue
 
-            # Venue: look for "World Trade Centre" or "WTCKL" nearby
             venue = "World Trade Centre Kuala Lumpur"
-
             link_el = heading.find("a", href=True) or container.find("a", href=True)
             link    = _abs_url(link_el["href"], base) if link_el else base
 
+            print(f"[MTE debug] event: {h_text[:60]!r}  {start}~{end}")
             events.append(RawEvent(
                 title=h_text[:200],
                 organizer="Malaysia Technology Expo",
