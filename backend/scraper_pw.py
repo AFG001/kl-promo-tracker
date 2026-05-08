@@ -454,28 +454,18 @@ async def scrape_myceb_pw() -> list[RawEvent]:
         browser = await p.chromium.launch(headless=True)
         page    = await _new_page(browser)
 
-        # Intercept XHR/fetch responses to find the hidden JSON API endpoint
-        api_responses: list[dict] = []
+        # Capture ALL requests (URL + method) to find the content-loading API
+        all_reqs: list[str] = []
 
-        async def _on_response(resp):
-            ct = resp.headers.get("content-type", "")
-            if "json" in ct and resp.status < 400:
-                try:
-                    body = await resp.text()
-                    api_responses.append({"url": resp.url, "body": body[:600]})
-                except Exception:
-                    pass
+        async def _on_request(req):
+            all_reqs.append(f"{req.method} {req.url}")
 
-        page.on("response", _on_response)
+        page.on("request", _on_request)
 
         # /events/calendar-of-events is the confirmed listing page
-        for path in [
-            "/events/calendar-of-events",
-            "/exhibitions",
-            "/events",
-        ]:
+        for path in ["/events/calendar-of-events"]:
             url = BASE + path
-            api_responses.clear()
+            all_reqs.clear()
             if not await _safe_goto(page, url):
                 continue
 
@@ -485,35 +475,32 @@ async def scrape_myceb_pw() -> list[RawEvent]:
             except Exception:
                 pass
 
-            # Wait + scroll to trigger lazy-loaded content
+            # Wait for networkidle, then extra time for lazy-load
             try:
-                await page.wait_for_load_state("networkidle", timeout=15_000)
+                await page.wait_for_load_state("networkidle", timeout=20_000)
             except Exception:
                 pass
+            await page.wait_for_timeout(5000)   # extra 5 s for dynamic modules
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await page.wait_for_timeout(3000)
-                await page.evaluate("window.scrollTo(0, 0)")
-                await page.wait_for_timeout(1000)
             except Exception:
                 pass
 
-            # Debug: show JSON API calls made during page load
-            if api_responses:
-                print(f"    [MyCEB PW] {path} → {len(api_responses)} JSON responses:")
-                for r in api_responses[:6]:
-                    print(f"      url={r['url'][:100]}")
-                    print(f"      body={r['body'][:200]!r}")
-            else:
-                print(f"    [MyCEB PW] {path} → no JSON API calls detected")
+            # Print all network requests (reveals hidden API)
+            print(f"    [MyCEB PW] {len(all_reqs)} requests:")
+            for r in all_reqs:
+                if not any(ext in r for ext in [".jpg", ".png", ".svg", ".css", ".woff"]):
+                    print(f"      {r[:130]}")
 
-            # Debug: dump rendered DOM body (first 3000 chars)
+            # Visible page text (much more informative than raw HTML)
             try:
-                dom = await page.content()
-                body_start = dom.find("<body")
-                print(f"    [MyCEB PW] DOM snippet: {dom[body_start:body_start+3000]!r}")
+                body_text = await page.inner_text("body")
+                print(f"    [MyCEB PW] body text (2000 chars): {body_text[:2000]!r}")
             except Exception as exc:
-                print(f"    [MyCEB PW] content() error: {exc}")
+                print(f"    [MyCEB PW] inner_text error: {exc}")
+
+            break   # only one path needed for diagnosis
 
             # MyCEB uses X-Theme/Cornerstone with UUID-based class names —
             # no semantic selectors work.  Instead, use JS to harvest all
