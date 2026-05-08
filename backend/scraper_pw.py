@@ -2,65 +2,99 @@
 Playwright-based scrapers for JS-rendered / Cloudflare-protected sites.
 
 Sites:
-  - ExhibitionsForYou  (Cloudflare blocks CI IPs on static fetch)
+  - ExhibitionsForYou  (Cloudflare blocks CI IPs on static httpx fetch)
   - TMT / Thunder Match (custom JS-rendered e-commerce platform)
 
-Requirements:
-  pip install playwright playwright-stealth
+Requirements (no third-party stealth library needed):
+  pip install playwright
   playwright install chromium
 
-Run sequentially (1 Chromium process at a time) to stay within
-GitHub Actions memory limits (7 GB RAM, 2 vCPU).
+Run scrapers sequentially (one Chromium process at a time) to stay
+within GitHub Actions memory limits (2 vCPU / 7 GB RAM).
 """
 import re
 from datetime import date, timedelta
 
 try:
     from playwright.async_api import async_playwright
-    from playwright_stealth import stealth_async
     PLAYWRIGHT_AVAILABLE = True
-except ImportError:
+except ImportError as _err:
     PLAYWRIGHT_AVAILABLE = False
-    print("[scraper_pw] WARNING: playwright / playwright-stealth not installed")
+    print(f"[scraper_pw] WARNING: playwright not installed ({_err})")
 
 from scraper import RawEvent, _clean, _date_range, _is_electronics_related
 
-# ── constants ─────────────────────────────────────────────────────────────────
-NAV_TIMEOUT  = 45_000   # 45 s per page navigation
+# ── constants ──────────────────────────────────────────────────────────────────
+NAV_TIMEOUT = 45_000   # ms per page navigation
+
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
+# Minimal JS to suppress obvious headless/automation indicators.
+# Covers the most common Cloudflare / bot-detection checks.
+_STEALTH_JS = """
+// Hide the webdriver flag
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// Fake plugin list (headless has 0 plugins)
+Object.defineProperty(navigator, 'plugins', {
+    get: () => ({ length: 3, item: () => null, namedItem: () => null,
+                   refresh: () => {} })
+});
+
+// Mimic real browser languages
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['en-US', 'en', 'ms']
+});
+
+// Provide a minimal chrome object
+if (!window.chrome) {
+    window.chrome = { runtime: {}, app: { isInstalled: false } };
+}
+
+// Remove HeadlessChrome from User-Agent string exposed to JS
+Object.defineProperty(navigator, 'userAgent', {
+    get: () => navigator.userAgent.replace('HeadlessChrome', 'Chrome')
+});
+"""
+
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
 
-async def _new_stealth_page(browser):
-    """Create a browser context with human-like fingerprint + stealth patches."""
+async def _new_page(browser):
+    """Create a browser context with human-like fingerprint (no extra libs)."""
     ctx = await browser.new_context(
         user_agent=_UA,
         locale="en-US",
         timezone_id="Asia/Kuala_Lumpur",
         viewport={"width": 1280, "height": 800},
         java_script_enabled=True,
+        extra_http_headers={
+            "Accept-Language":  "en-US,en;q=0.9",
+            "Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "sec-ch-ua":        '"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        },
     )
     page = await ctx.new_page()
-    await stealth_async(page)
+    await page.add_init_script(_STEALTH_JS)
     return page
 
 
 async def _safe_goto(page, url: str, *, retries: int = 2) -> bool:
-    """Navigate to url, return True on success."""
+    """Navigate to url; return True on success (HTTP < 400)."""
     for attempt in range(retries):
         try:
             resp = await page.goto(url, timeout=NAV_TIMEOUT, wait_until="networkidle")
             if resp and resp.status < 400:
                 return True
-            if resp:
-                print(f"    [PW] HTTP {resp.status} for {url}")
+            print(f"    [PW] HTTP {resp.status if resp else '?'} for {url}")
         except Exception as exc:
-            print(f"    [PW] goto {url} attempt {attempt+1} error: {exc}")
+            print(f"    [PW] goto {url} attempt {attempt + 1}: {exc}")
     return False
 
 
@@ -70,45 +104,46 @@ async def _safe_goto(page, url: str, *, retries: int = 2) -> bool:
 
 async def scrape_exhibitionsforyou_pw() -> list[RawEvent]:
     """
-    exhibitionsforyou.com – Malaysia events, filtered to electronics category.
-    Uses Playwright to bypass Cloudflare (returns 403 on static httpx).
+    exhibitionsforyou.com – all Malaysia events, filtered to
+    electronics/tech category via _is_electronics_related().
+    Playwright used because Cloudflare returns 403 on bare httpx.
     """
     events: list[RawEvent] = []
     seen:   set[str] = set()
-    MYS    = re.compile(r"Malaysia|Kuala Lumpur\b|\bKL\b", re.I)
-    BASE   = "https://exhibitionsforyou.com"
+    MYS  = re.compile(r"Malaysia|Kuala Lumpur\b|\bKL\b", re.I)
+    BASE = "https://exhibitionsforyou.com"
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page    = await _new_stealth_page(browser)
+        page    = await _new_page(browser)
 
         for pg in range(1, 8):
-            if pg == 1:
-                url = f"{BASE}/all-events/?location=Malaysia"
-            else:
-                url = f"{BASE}/all-events/page/{pg}/?location=Malaysia"
+            url = (
+                f"{BASE}/all-events/?location=Malaysia"
+                if pg == 1
+                else f"{BASE}/all-events/page/{pg}/?location=Malaysia"
+            )
 
-            ok = await _safe_goto(page, url)
-            if not ok:
-                print(f"    [ExhibitionsForYou PW] failed page {pg}, stopping")
+            if not await _safe_goto(page, url):
+                print(f"    [ExhibitionsForYou PW] page {pg} failed — stopping")
                 break
 
-            # ── find event cards ───────────────────────────────────────────
-            # The site uses .event-box on category pages; the all-events page
-            # may use the same or .tribe-events-list-event-row etc.
+            # ── locate event cards ─────────────────────────────────────────
             boxes = await page.query_selector_all(
-                ".event-box, .tribe-events-list-event-row, "
-                ".tribe-event-list-item, article.type-tribe_events, "
-                ".events-list__event, li.event"
+                ".event-box, "
+                ".tribe-events-list-event-row, "
+                ".tribe-event-list-item, "
+                "article.type-tribe_events, "
+                ".events-archive__item"
             )
             if not boxes:
-                # Generic fallback: any <article> or <li> containing a year
-                boxes = await page.query_selector_all("article, li")
-                boxes = [b for b in boxes
-                         if str(await b.inner_text()).count("202") > 0]
+                # Generic fallback: articles / list items with a 4-digit year
+                all_items = await page.query_selector_all("article, li")
+                boxes = [b for b in all_items
+                         if "202" in (await b.inner_text())]
 
             if not boxes:
-                print(f"    [ExhibitionsForYou PW] no event boxes on page {pg}")
+                print(f"    [ExhibitionsForYou PW] no event cards on page {pg}")
                 break
 
             found_on_page = False
@@ -117,8 +152,9 @@ async def scrape_exhibitionsforyou_pw() -> list[RawEvent]:
                     box_text = await box.inner_text()
                 except Exception:
                     continue
+
                 if not MYS.search(box_text):
-                    continue
+                    continue    # skip non-Malaysia events
 
                 # title
                 title_el = await box.query_selector(
@@ -128,9 +164,7 @@ async def scrape_exhibitionsforyou_pw() -> list[RawEvent]:
                 if not title_el:
                     continue
                 title = _clean(await title_el.inner_text())
-                if not title or title in seen:
-                    continue
-                if not _is_electronics_related(title):
+                if not title or title in seen or not _is_electronics_related(title):
                     continue
                 seen.add(title)
                 found_on_page = True
@@ -138,14 +172,17 @@ async def scrape_exhibitionsforyou_pw() -> list[RawEvent]:
                 # date
                 date_el = await box.query_selector(
                     "h4, .event-date, time, "
-                    ".tribe-event-date-start, [class*='event-date'], abbr"
+                    ".tribe-event-date-start, [class*='date'], abbr"
                 )
                 date_raw = _clean(await date_el.inner_text()) if date_el else ""
                 start, end = _date_range(date_raw)
 
                 # link
                 link_el = await box.query_selector("a[href]")
-                link = await link_el.get_attribute("href") if link_el else url
+                try:
+                    link = await link_el.get_attribute("href") if link_el else url
+                except Exception:
+                    link = url
                 if link and not link.startswith("http"):
                     link = BASE + link
 
@@ -162,11 +199,11 @@ async def scrape_exhibitionsforyou_pw() -> list[RawEvent]:
                 ))
 
             if not found_on_page and pg > 1:
-                break   # no Malaysia+electronics events on this page → stop
+                break   # no matching events on this page → stop paginating
 
         await browser.close()
 
-    print(f"    [ExhibitionsForYou PW] found {len(events)} events")
+    print(f"    [ExhibitionsForYou PW] total {len(events)} events")
     return events
 
 
@@ -176,9 +213,10 @@ async def scrape_exhibitionsforyou_pw() -> list[RawEvent]:
 
 async def scrape_tmt_pw() -> list[RawEvent]:
     """
-    tmt.my – custom JS-rendered e-commerce platform.
-    Scrapes the sale / promotions section of the homepage or dedicated pages.
-    Assigns today → today+30 as the promotion date window.
+    tmt.my – custom JS-rendered e-commerce.
+    Scrapes current sale / promotion product listings.
+    Assigns today → today+30 as the promotion date window so events
+    appear on the calendar as "active this month".
     """
     events: list[RawEvent] = []
     seen:   set[str] = set()
@@ -186,50 +224,49 @@ async def scrape_tmt_pw() -> list[RawEvent]:
     MONTH_END = (date.today() + timedelta(days=30)).isoformat()
     BASE      = "https://www.tmt.my"
 
-    # Selectors for product cards (try broad → narrow)
-    CARD_SELECTORS = (
+    CARD_SEL  = (
         ".product-item, .product-card, .product-tile, "
-        "[class*='product-grid'] li, [class*='product-list'] li, "
+        "[class*='product-grid-item'], [class*='product-list-item'], "
         "article.product"
     )
-    TITLE_SELECTORS = (
+    TITLE_SEL = (
         "h2, h3, h4, .product-title, .product-name, "
-        "[class*='product-title'], [class*='product-name']"
+        "[class*='product-title'], [class*='product-name'], "
+        "[class*='ProductTitle'], [class*='ProductName']"
     )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page    = await _new_stealth_page(browser)
+        page    = await _new_page(browser)
 
         for path in [
             "/collections/sale",
             "/collections/promotions",
             "/collections/deals",
             "/collections/featured",
-            "/",   # homepage as last resort
+            "/",
         ]:
             url = BASE + path
-            ok  = await _safe_goto(page, url)
-            if not ok:
+            if not await _safe_goto(page, url):
                 continue
 
-            # Give JS carousels a moment to settle
+            # Give JS carousels extra settle time
             try:
                 await page.wait_for_load_state("networkidle", timeout=10_000)
             except Exception:
                 pass
 
-            cards = await page.query_selector_all(CARD_SELECTORS)
+            cards = await page.query_selector_all(CARD_SEL)
             if not cards:
-                # Try a more generic selector
-                cards = await page.query_selector_all("li[class*='product'], div[class*='product']")
-
+                cards = await page.query_selector_all(
+                    "li[class*='product'], div[class*='product']"
+                )
             if not cards:
                 continue
 
             for card in cards[:40]:
                 try:
-                    title_el = await card.query_selector(TITLE_SELECTORS)
+                    title_el = await card.query_selector(TITLE_SEL)
                     if not title_el:
                         continue
                     title = _clean(await title_el.inner_text())
@@ -260,8 +297,8 @@ async def scrape_tmt_pw() -> list[RawEvent]:
                 ))
 
             if events:
-                print(f"    [TMT PW] got {len(events)} products from {path}")
-                break   # first working page is enough
+                print(f"    [TMT PW] {len(events)} products from {path}")
+                break
 
         await browser.close()
 
@@ -282,21 +319,20 @@ _PW_SCRAPERS: list[tuple[str, callable]] = [
 async def run_pw_scrapers() -> dict[str, list[RawEvent]]:
     """
     Run all Playwright scrapers **sequentially** (one Chromium process at a
-    time) to avoid OOM on GitHub Actions (2 vCPU / 7 GB RAM).
+    time) to avoid OOM on GitHub Actions.
+    Returns empty dict immediately if Playwright is not installed.
     """
-    results: dict[str, list[RawEvent]] = {}
-
     if not PLAYWRIGHT_AVAILABLE:
-        print("[scraper_pw] Playwright not installed — skipping all PW scrapers")
-        return results
+        print("[scraper_pw] Playwright not available — skipping PW scrapers")
+        return {}
 
+    results: dict[str, list[RawEvent]] = {}
     for name, fn in _PW_SCRAPERS:
-        print(f"  [PW scraper] Starting: {name}")
+        print(f"  [PW] Starting: {name}")
         try:
-            events = await fn()
-            results[name] = events
+            results[name] = await fn()
         except Exception as exc:
-            print(f"  [PW scraper] {name} crashed: {exc}")
+            print(f"  [PW] {name} crashed: {exc}")
             results[name] = []
 
     return results
