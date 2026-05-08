@@ -111,8 +111,8 @@ def _date_range(text: str) -> tuple[str, str]:
         d = m.group(1)
         return d, d
 
-    # "D1 – D2 Month YYYY"
-    m = re.search(r"(\d{1,2})\s*-\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", text)
+    # "D1 – D2 Month YYYY"  (also handles "D1 - D2 Month, YYYY" with comma)
+    m = re.search(r"(\d{1,2})\s*-\s*(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})", text)
     if m:
         d1, d2, mon, yr = m.groups()
         return _parse_date(f"{d1} {mon} {yr}"), _parse_date(f"{d2} {mon} {yr}")
@@ -736,6 +736,148 @@ def _parse_klcc_date(s: str) -> str:
         return ""
 
 
+async def scrape_expolah(client: httpx.AsyncClient) -> list[RawEvent]:
+    """
+    expolah.com – Malaysian exhibition directory (server-rendered, no bot block).
+    Scrapes the 'technology' and 'trade-fairs' categories, filtered to
+    electronics-related events via _is_electronics_related().
+    Date format on this site: "12 - 13 May, 2026" (comma before year).
+    """
+    base = "https://expolah.com"
+    events: list[RawEvent] = []
+    seen:   set[str] = set()
+
+    for category in ["technology", "trade-fairs"]:
+        for page in range(1, 8):  # up to 7 pages per category
+            url = (
+                f"{base}/events/?category={category}"
+                if page == 1
+                else f"{base}/events/?category={category}&page={page}"
+            )
+            try:
+                soup = _soup(await _get(client, url))
+            except Exception as exc:
+                print(f"[Expolah] {category} page {page} error: {exc}")
+                break
+
+            # Try common event-card selectors first, then fall back to h3 parents
+            cards = soup.select(
+                "article, .event-card, .event-item, "
+                "[class*='event-card'], [class*='event-item'], "
+                ".tribe-events-calendar-list__event-row, li[class*='event']"
+            )
+            if not cards:
+                # Generic: any block element that contains an h3 and a 4-digit year
+                cards = [
+                    el.parent
+                    for el in soup.find_all("h3")
+                    if el.parent and re.search(r"\b20\d{2}\b", el.parent.get_text())
+                ]
+            if not cards:
+                break
+
+            found_on_page = False
+            for card in cards:
+                title_el = card.find("h3") or card.find("h2")
+                if not title_el:
+                    continue
+                title = _clean(title_el.get_text())
+                if not title or title in seen:
+                    continue
+                if not _is_electronics_related(title):
+                    continue
+                seen.add(title)
+                found_on_page = True
+
+                # Date – strip commas so _date_range handles "May, 2026" correctly
+                card_text = card.get_text().replace(",", " ")
+                start, end = _date_range(card_text)
+
+                # Venue – look for a venue/location element, else leave blank
+                venue_el = card.select_one(
+                    "[class*='venue'], [class*='location'], [class*='address']"
+                )
+                venue = _clean(venue_el.get_text()) if venue_el else ""
+
+                link_el = card.find("a", href=True)
+                link    = _abs_url(link_el["href"], base) if link_el else url
+
+                events.append(RawEvent(
+                    title=title,
+                    organizer="",
+                    location="Kuala Lumpur",
+                    venue=venue,
+                    start_date=start,
+                    end_date=end,
+                    source_url=link,
+                    source_site="Expolah",
+                    tags=["exhibition", "kl", "malaysia"],
+                ))
+
+            if not found_on_page and page > 1:
+                break   # no relevant events on this page → stop paginating
+
+    return events
+
+
+async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
+    """
+    Malaysia Technology Expo (MTE) – annual tech innovation expo
+    at World Trade Centre KL. Static HTML with event dates in headings/paragraphs.
+    """
+    base = "https://www.mte.org.my"
+    events: list[RawEvent] = []
+    try:
+        soup = _soup(await _get(client, f"{base}/index.php"))
+
+        # First try: JSON-LD structured data
+        jld = _jsonld_events(
+            soup, f"{base}/index.php",
+            "Malaysia Technology Expo", "MTE",
+            "Kuala Lumpur", "World Trade Centre Kuala Lumpur",
+            ["exhibition", "technology", "innovation", "kl"],
+        )
+        if jld:
+            return [e for e in jld if _is_electronics_related(e.title)]
+
+        # Fallback: scan h2/h3 elements for "MTE" or "Malaysia Technology Expo"
+        for heading in soup.find_all(["h1", "h2", "h3"]):
+            h_text = _clean(heading.get_text())
+            if not re.search(r"Malaysia Technology Expo|MTE\s+20\d{2}", h_text, re.I):
+                continue
+
+            # Look for date pattern in surrounding text (parent + siblings)
+            container = heading.parent or heading
+            ctx_text  = _clean(container.get_text())
+            start, end = _date_range(ctx_text.replace(",", " "))
+            if not start:
+                continue
+
+            # Venue: look for "World Trade Centre" or "WTCKL" nearby
+            venue = "World Trade Centre Kuala Lumpur"
+
+            link_el = heading.find("a", href=True) or container.find("a", href=True)
+            link    = _abs_url(link_el["href"], base) if link_el else base
+
+            events.append(RawEvent(
+                title=h_text[:200],
+                organizer="Malaysia Technology Expo",
+                location="Kuala Lumpur",
+                venue=venue,
+                start_date=start,
+                end_date=end,
+                source_url=link,
+                source_site="MTE",
+                tags=["exhibition", "technology", "innovation", "kl"],
+            ))
+            break   # one main event per page
+
+    except Exception as exc:
+        print(f"[MTE] error: {exc}")
+
+    return events
+
+
 async def scrape_klcc_convention(client: httpx.AsyncClient) -> list[RawEvent]:
     """KLCC Convention Centre – What's On via XTOPIA CMS internal API."""
     base    = "https://www.klccconventioncentre.com"
@@ -1254,6 +1396,8 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
     "HOMEDEC":              ("Tier1-Exhibition", scrape_homedec),
     "HomeLove MY":          ("Tier1-Exhibition", scrape_homelove),
     "PIKOM":                ("Tier1-Exhibition", scrape_pikom),
+    "Expolah":              ("Tier1-Exhibition", scrape_expolah),
+    "MTE":                  ("Tier1-Exhibition", scrape_mte),
     "Senheng":              ("Tier2-Retail",     scrape_senheng),
     "Harvey Norman MY":     ("Tier2-Retail",     scrape_harvey_norman),
     "Courts MY":            ("Tier2-Retail",     scrape_courts),

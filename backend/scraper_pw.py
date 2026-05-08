@@ -307,12 +307,246 @@ async def scrape_tmt_pw() -> list[RawEvent]:
 
 
 # ===========================================================================
+# 10times.com – global exhibition directory
+# ===========================================================================
+
+async def scrape_10times_pw() -> list[RawEvent]:
+    """
+    10times.com – largest global trade fair database.
+    Returns 403 on bare httpx; Playwright bypasses Cloudflare.
+    Scrapes the Malaysia electronics + technology trade-show pages.
+    """
+    events: list[RawEvent] = []
+    seen:   set[str] = set()
+    BASE   = "https://10times.com"
+
+    URLS = [
+        f"{BASE}/malaysia/electronics-electricals/tradeshows",
+        f"{BASE}/malaysia/technology/tradeshows",
+        f"{BASE}/malaysia/computer/tradeshows",
+    ]
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page    = await _new_page(browser)
+
+        for url in URLS:
+            if not await _safe_goto(page, url):
+                continue
+
+            # 10times is a React app — wait for event cards to render
+            try:
+                await page.wait_for_selector(
+                    "[class*='event'], [class*='show-'], article, "
+                    ".event-name, h3, h2",
+                    timeout=15_000,
+                )
+            except Exception:
+                pass
+
+            cards = await page.query_selector_all(
+                "[class*='event-box'], [class*='event-card'], "
+                "[class*='event-item'], [class*='show-item'], "
+                "[class*='show-card'], article[class*='event'], "
+                "li[class*='event'], .event-listing"
+            )
+            if not cards:
+                # Fallback: any element containing an h3 + a year-like text
+                all_h3 = await page.query_selector_all("h3, h2")
+                for h in all_h3:
+                    txt = await h.inner_text()
+                    if re.search(r"\b20\d{2}\b", txt):
+                        parent = await h.evaluate_handle("el => el.parentElement")
+                        cards.append(parent)
+
+            for card in cards[:30]:
+                try:
+                    # title
+                    title_el = await card.query_selector(
+                        "h3, h2, [class*='event-name'], [class*='show-name'], "
+                        "[class*='title'], a[class*='name']"
+                    )
+                    if not title_el:
+                        continue
+                    title = _clean(await title_el.inner_text())
+                except Exception:
+                    continue
+
+                if not title or len(title) < 6 or title in seen:
+                    continue
+                if not _is_electronics_related(title):
+                    continue
+                seen.add(title)
+
+                # date
+                try:
+                    date_el = await card.query_selector(
+                        "[class*='date'], [class*='period'], time, "
+                        "[class*='when'], [class*='timing']"
+                    )
+                    date_raw = _clean(await date_el.inner_text()) if date_el else ""
+                except Exception:
+                    date_raw = ""
+                date_raw = date_raw.replace(",", " ")
+                start, end = _date_range(date_raw)
+
+                # venue / location
+                try:
+                    venue_el = await card.query_selector(
+                        "[class*='venue'], [class*='location'], "
+                        "[class*='city'], [class*='place']"
+                    )
+                    venue = _clean(await venue_el.inner_text()) if venue_el else ""
+                except Exception:
+                    venue = ""
+
+                # link
+                try:
+                    link_el = await card.query_selector("a[href]")
+                    link = await link_el.get_attribute("href") if link_el else url
+                    if link and not link.startswith("http"):
+                        link = BASE + link
+                except Exception:
+                    link = url
+
+                events.append(RawEvent(
+                    title=title,
+                    organizer="",
+                    location="Kuala Lumpur",
+                    venue=venue,
+                    start_date=start,
+                    end_date=end,
+                    source_url=link,
+                    source_site="10times",
+                    tags=["exhibition", "trade-fair", "kl", "malaysia"],
+                ))
+
+        await browser.close()
+
+    print(f"    [10times PW] total {len(events)} events")
+    return events
+
+
+# ===========================================================================
+# MyCEB – Malaysia Convention & Exhibition Bureau (government MICE body)
+# ===========================================================================
+
+async def scrape_myceb_pw() -> list[RawEvent]:
+    """
+    myceb.com.my – official Malaysia MICE authority.
+    JS-rendered; Playwright needed. 34 exhibitions + 298 conventions listed.
+    Filters to electronics/tech via _is_electronics_related().
+    """
+    events: list[RawEvent] = []
+    seen:   set[str] = set()
+    BASE   = "https://www.myceb.com.my"
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page    = await _new_page(browser)
+
+        # Try the Exhibitions tab specifically first, then general events
+        for path in [
+            "/events?type=exhibition",
+            "/events?category=exhibition",
+            "/events",
+            "/business-events",
+        ]:
+            url = BASE + path
+            if not await _safe_goto(page, url):
+                continue
+
+            # Wait for dynamic content
+            try:
+                await page.wait_for_selector(
+                    "[class*='event'], [class*='card'], article, li[class*='event']",
+                    timeout=12_000,
+                )
+            except Exception:
+                pass
+
+            cards = await page.query_selector_all(
+                "[class*='event-card'], [class*='event-item'], "
+                "[class*='calendar-item'], [class*='card'], "
+                "article, li[class*='event']"
+            )
+            if not cards:
+                break
+
+            found = False
+            for card in cards[:60]:
+                try:
+                    title_el = await card.query_selector(
+                        "h2, h3, h4, [class*='title'], [class*='name'], a"
+                    )
+                    if not title_el:
+                        continue
+                    title = _clean(await title_el.inner_text())
+                except Exception:
+                    continue
+
+                if not title or len(title) < 6 or title in seen:
+                    continue
+                if not _is_electronics_related(title):
+                    continue
+                seen.add(title)
+                found = True
+
+                try:
+                    date_el = await card.query_selector(
+                        "[class*='date'], time, [class*='period'], [class*='when']"
+                    )
+                    date_raw = _clean(await date_el.inner_text()).replace(",", " ") if date_el else ""
+                except Exception:
+                    date_raw = ""
+                start, end = _date_range(date_raw)
+
+                try:
+                    venue_el = await card.query_selector(
+                        "[class*='venue'], [class*='location'], [class*='place']"
+                    )
+                    venue = _clean(await venue_el.inner_text()) if venue_el else ""
+                except Exception:
+                    venue = ""
+
+                try:
+                    link_el = await card.query_selector("a[href]")
+                    link = await link_el.get_attribute("href") if link_el else url
+                    if link and not link.startswith("http"):
+                        link = BASE + link
+                except Exception:
+                    link = url
+
+                events.append(RawEvent(
+                    title=title,
+                    organizer="MyCEB",
+                    location="Kuala Lumpur",
+                    venue=venue,
+                    start_date=start,
+                    end_date=end,
+                    source_url=link,
+                    source_site="MyCEB",
+                    tags=["exhibition", "mice", "kl", "malaysia"],
+                ))
+
+            if found:
+                break   # got results from this path
+
+        await browser.close()
+
+    print(f"    [MyCEB PW] total {len(events)} events")
+    return events
+
+
+# ===========================================================================
 # Runner
 # ===========================================================================
 
 _PW_SCRAPERS: list[tuple[str, callable]] = [
     ("ExhibitionsForYou", scrape_exhibitionsforyou_pw),
     ("TMT",               scrape_tmt_pw),
+    ("10times",           scrape_10times_pw),
+    ("MyCEB",             scrape_myceb_pw),
 ]
 
 
