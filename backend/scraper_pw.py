@@ -454,12 +454,13 @@ async def scrape_myceb_pw() -> list[RawEvent]:
         browser = await p.chromium.launch(headless=True)
         page    = await _new_page(browser)
 
-        # Try the Exhibitions tab specifically first, then general events
+        # Try the dedicated exhibitions page first (confirmed link from nav),
+        # then fall back to events calendar URLs
         for path in [
+            "/exhibitions",
+            "/conventions",
             "/events?type=exhibition",
-            "/events?category=exhibition",
             "/events",
-            "/business-events",
         ]:
             url = BASE + path
             if not await _safe_goto(page, url):
@@ -472,12 +473,15 @@ async def scrape_myceb_pw() -> list[RawEvent]:
             except Exception:
                 pass
 
-            # Wait for dynamic content
+            # Wait for dynamic content, then scroll to trigger lazy-loads
             try:
-                await page.wait_for_selector(
-                    "[class*='event'], [class*='card'], article, li[class*='event']",
-                    timeout=12_000,
-                )
+                await page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:
+                pass
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(2000)
+                await page.evaluate("window.scrollTo(0, 0)")
             except Exception:
                 pass
 
@@ -494,7 +498,7 @@ async def scrape_myceb_pw() -> list[RawEvent]:
                         const text = (a.textContent || '').trim();
                         if (text.length < 8) return;
                         const looksLikeEvent =
-                            /\\/events?\\/|calendar|exhibition|convention/i.test(href) ||
+                            /\\/events?\\/|\\/exhibitions?\\/|\\/conventions?\\/|calendar/i.test(href) ||
                             /\\b20\\d{2}\\b/.test(text);
                         if (!looksLikeEvent) return;
                         const block = a.closest('div, li, article, section') || a.parentElement;
