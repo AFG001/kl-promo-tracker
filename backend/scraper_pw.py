@@ -481,80 +481,59 @@ async def scrape_myceb_pw() -> list[RawEvent]:
             except Exception:
                 pass
 
-            # Debug: dump top-level class names on the page to identify selectors
+            # MyCEB uses X-Theme/Cornerstone with UUID-based class names —
+            # no semantic selectors work.  Instead, use JS to harvest all
+            # <a> links that look like event detail pages, then pull the
+            # surrounding block text for title + date context.
             try:
-                classes = await page.evaluate(
-                    "() => [...new Set([...document.querySelectorAll('[class]')]"
-                    ".map(el => el.className).filter(c => typeof c === 'string'))].slice(0,30)"
-                )
-                print(f"    [MyCEB PW] sample classes: {classes[:15]}")
-            except Exception:
-                pass
+                raw_links = await page.evaluate("""
+                () => {
+                    const results = [];
+                    document.querySelectorAll('a[href]').forEach(a => {
+                        const href = a.getAttribute('href') || '';
+                        const text = (a.textContent || '').trim();
+                        if (text.length < 8) return;
+                        const looksLikeEvent =
+                            /\\/events?\\/|calendar|exhibition|convention/i.test(href) ||
+                            /\\b20\\d{2}\\b/.test(text);
+                        if (!looksLikeEvent) return;
+                        const block = a.closest('div, li, article, section') || a.parentElement;
+                        const ctx = block ? block.innerText.trim().slice(0, 300) : '';
+                        results.push({ title: text, href, context: ctx });
+                    });
+                    return results.slice(0, 60);
+                }
+                """)
+            except Exception as exc:
+                print(f"    [MyCEB PW] JS evaluate error: {exc}")
+                raw_links = []
 
-            cards = await page.query_selector_all(
-                "[class*='event-card'], [class*='event-item'], "
-                "[class*='calendar-item'], [class*='card'], "
-                "article, li[class*='event']"
-            )
-            print(f"    [MyCEB PW] cards found: {len(cards)}")
-            if not cards:
-                # Try broader: any li or div that contains a heading
-                cards = await page.query_selector_all("li, div.item, div.row")
-                cards = [c for c in cards[:100]
-                         if await c.query_selector("h2, h3, h4")]
-                print(f"    [MyCEB PW] fallback cards: {len(cards)}")
-            if not cards:
-                break
+            print(f"    [MyCEB PW] {path} → {len(raw_links)} candidate links")
+            for item in (raw_links or [])[:5]:
+                print(f"      title={item['title'][:60]!r}  href={item['href'][:80]!r}")
+                print(f"      ctx={item['context'][:120]!r}")
 
             found = False
-            for card in cards[:60]:
-                try:
-                    title_el = await card.query_selector(
-                        "h2, h3, h4, [class*='title'], [class*='name'], a"
-                    )
-                    if not title_el:
-                        continue
-                    title = _clean(await title_el.inner_text())
-                except Exception:
-                    continue
-
-                if not title or len(title) < 6 or title in seen:
+            for item in (raw_links or []):
+                title = _clean(item.get("title", ""))
+                if not title or len(title) < 8 or title in seen:
                     continue
                 if not _is_electronics_related(title):
                     continue
                 seen.add(title)
                 found = True
 
-                try:
-                    date_el = await card.query_selector(
-                        "[class*='date'], time, [class*='period'], [class*='when']"
-                    )
-                    date_raw = _clean(await date_el.inner_text()).replace(",", " ") if date_el else ""
-                except Exception:
-                    date_raw = ""
-                start, end = _date_range(date_raw)
+                ctx = item.get("context", "").replace(",", " ")
+                start, end = _date_range(ctx)
 
-                try:
-                    venue_el = await card.query_selector(
-                        "[class*='venue'], [class*='location'], [class*='place']"
-                    )
-                    venue = _clean(await venue_el.inner_text()) if venue_el else ""
-                except Exception:
-                    venue = ""
-
-                try:
-                    link_el = await card.query_selector("a[href]")
-                    link = await link_el.get_attribute("href") if link_el else url
-                    if link and not link.startswith("http"):
-                        link = BASE + link
-                except Exception:
-                    link = url
+                href = item.get("href", "")
+                link = href if href.startswith("http") else (BASE + href if href else url)
 
                 events.append(RawEvent(
                     title=title,
                     organizer="MyCEB",
                     location="Kuala Lumpur",
-                    venue=venue,
+                    venue="",
                     start_date=start,
                     end_date=end,
                     source_url=link,
@@ -562,8 +541,8 @@ async def scrape_myceb_pw() -> list[RawEvent]:
                     tags=["exhibition", "mice", "kl", "malaysia"],
                 ))
 
-            if found:
-                break   # got results from this path
+            if found or raw_links:
+                break   # got data from this path — don't try more URLs
 
         await browser.close()
 

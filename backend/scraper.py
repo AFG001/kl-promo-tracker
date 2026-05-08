@@ -765,13 +765,16 @@ async def scrape_expolah(client: httpx.AsyncClient) -> list[RawEvent]:
             if page == 1:
                 all_h3 = soup.find_all("h3")
                 all_h2 = soup.find_all("h2")
+                all_h4 = soup.find_all("h4")
+                # Show first 500 chars of raw HTML to detect Cloudflare / JS shell
                 print(
                     f"[Expolah debug] {category} → "
-                    f"html_len={len(html)} h2={len(all_h2)} h3={len(all_h3)}"
+                    f"html_len={len(html)} h2={len(all_h2)} h3={len(all_h3)} h4={len(all_h4)}"
                 )
-                # Show first 5 h3 texts to understand structure
-                for i, h in enumerate(all_h3[:5]):
-                    print(f"  h3[{i}]: {_clean(h.get_text())[:80]!r}")
+                print(f"  html_snippet: {html[:500]!r}")
+                # Unique tag names actually used on the page
+                all_tags = {t.name for t in soup.find_all(True)}
+                print(f"  tags used: {sorted(all_tags)}")
 
             # Strategy 1: common event-card containers
             cards = soup.select(
@@ -880,12 +883,15 @@ async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
         soup = _soup(html)
 
         # Debug: report page structure
-        h_counts = {t: len(soup.find_all(t)) for t in ["h1", "h2", "h3"]}
+        h_counts = {t: len(soup.find_all(t)) for t in ["h1", "h2", "h3", "h4"]}
+        all_tags = {t.name for t in soup.find_all(True)}
         print(
             f"[MTE debug] html_len={len(html)} "
-            f"h1={h_counts['h1']} h2={h_counts['h2']} h3={h_counts['h3']}"
+            f"h1={h_counts['h1']} h2={h_counts['h2']} h3={h_counts['h3']} h4={h_counts['h4']}"
         )
-        for i, h in enumerate(soup.find_all(["h1", "h2", "h3"])[:8]):
+        print(f"  tags used: {sorted(all_tags)}")
+        print(f"  html_snippet: {html[:500]!r}")
+        for i, h in enumerate(soup.find_all(["h1", "h2", "h3", "h4"])[:8]):
             print(f"  {h.name}[{i}]: {_clean(h.get_text())[:80]!r}")
 
         # First try: JSON-LD structured data
