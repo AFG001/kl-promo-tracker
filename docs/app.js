@@ -4,6 +4,7 @@ let allEvents   = [];   // raw FullCalendar event objects from events.json
 let filters     = { site: "", category: "", tier: "", search: "" };
 let searchTimer = null;
 let lastUpdated = "";
+let hiddenMeta  = {};   // id → { title, site } for hidden events modal
 
 const SITE_TIER = {
   "HOMEDEC":           "Tier1-Exhibition",
@@ -12,10 +13,11 @@ const SITE_TIER = {
   "Senheng":           "Tier2-Retail",
   "Harvey Norman MY":  "Tier2-Retail",
   "Courts MY":         "Tier2-Retail",
-  "Best Denki MY":     "Tier2-Retail",
+  "TMT":               "Tier2-Retail",
   "MITEC":             "Tier3-Venue",
   "KLCC Convention":   "Tier3-Venue",
   "MVEC":              "Tier3-Venue",
+  "ExhibitionsForYou": "Tier3-Venue",
   "PWTC":              "Tier3-Venue",
   "Mid Valley":        "Tier3-Venue",
   "Sunway Pyramid":    "Tier3-Venue",
@@ -43,28 +45,79 @@ function _updateHiddenBadge() {
   const badge = document.getElementById("hidden-badge");
   if (!badge) return;
   if (hiddenIds.size > 0) {
-    badge.textContent = `${hiddenIds.size} hidden  ↩ Restore`;
+    badge.textContent = `${hiddenIds.size} hidden  👁 Manage`;
     badge.style.display = "inline-flex";
   } else {
     badge.style.display = "none";
   }
 }
 
-function hideEvent(id, title) {
+function hideEvent(id, title, site) {
   hiddenIds.add(id);
+  hiddenMeta[id] = { title, site: site || "" };
   _saveHidden();
   applyFilters();
   document.getElementById("side-panel").innerHTML = `
-    <div class="side-placeholder"><span>🗑</span><p>Event hidden.<br>Use <strong>Restore</strong> to undo.</p></div>`;
+    <div class="side-placeholder"><span>🗑</span><p>Event hidden.<br>Click <strong>${hiddenIds.size} hidden 👁 Manage</strong> to restore.</p></div>`;
   showToast(`Hidden: "${title}"`);
+}
+
+function restoreEvent(id) {
+  hiddenIds.delete(id);
+  delete hiddenMeta[id];
+  _saveHidden();
+  applyFilters();
+  _renderHiddenModal();
 }
 
 function restoreAllHidden() {
   const count = hiddenIds.size;
   hiddenIds.clear();
+  hiddenMeta = {};
   _saveHidden();
   applyFilters();
+  _closeHiddenModal();
   showToast(`Restored ${count} hidden event${count !== 1 ? "s" : ""}`);
+}
+
+function openHiddenModal() {
+  const overlay = document.getElementById("hidden-modal-overlay");
+  overlay.classList.add("active");
+  _renderHiddenModal();
+}
+
+function _closeHiddenModal() {
+  document.getElementById("hidden-modal-overlay").classList.remove("active");
+}
+
+function _renderHiddenModal() {
+  const list = document.getElementById("hidden-events-list");
+  if (!list) return;
+  if (hiddenIds.size === 0) {
+    list.innerHTML = `<p style="color:var(--muted);font-size:.83rem;text-align:center;padding:20px 0">No hidden events.</p>`;
+    document.getElementById("hidden-restore-all-btn").style.display = "none";
+    return;
+  }
+  document.getElementById("hidden-restore-all-btn").style.display = "";
+
+  // Merge meta from hiddenMeta + allEvents (in case page was refreshed)
+  const rows = [...hiddenIds].map(id => {
+    const meta = hiddenMeta[id];
+    if (meta) return { id, title: meta.title, site: meta.site };
+    // Try to find in allEvents
+    const ev = allEvents.find(e => e.id === id);
+    if (ev) return { id, title: ev.title, site: ev.extendedProps?.source_site || "" };
+    return { id, title: `(Unknown event — ${id.slice(0,8)}…)`, site: "" };
+  });
+
+  list.innerHTML = rows.map(r => `
+    <div class="hidden-event-row">
+      <div class="hidden-event-info">
+        <span class="hidden-event-title">${esc(r.title)}</span>
+        ${r.site ? `<span class="hidden-event-site">${esc(r.site)}</span>` : ""}
+      </div>
+      <button class="btn-restore" onclick="restoreEvent('${esc(r.id)}')">↩ Restore</button>
+    </div>`).join("");
 }
 
 /* ===== Init ===== */
@@ -200,7 +253,7 @@ function showDetail(event) {
       ${tagsHtml ? `<div class="event-tags">${tagsHtml}</div>` : ""}
       ${ep.source_url ? `<div class="event-source-link">🔗 <a href="${esc(ep.source_url)}" target="_blank" rel="noopener">View source page</a></div>` : ""}
       <div class="event-scraped-at">Updated: ${formatDateTime(ep.updated_at)}</div>
-      <button class="btn-hide" onclick="hideEvent('${esc(event.id)}', '${esc(event.title).replace(/'/g,"&#39;")}')">🗑 Hide this event</button>
+      <button class="btn-hide" onclick="hideEvent('${esc(event.id)}', '${esc(event.title).replace(/'/g,"&#39;")}', '${esc(ep.source_site || "").replace(/'/g,"&#39;")}')">🗑 Hide this event</button>
     </div>`;
 }
 

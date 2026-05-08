@@ -41,12 +41,25 @@ TIMEOUT = httpx.Timeout(30.0)
 
 # Electronics keyword filter (used for venue/media scrapers)
 ELEC_KEYWORDS = [
+    # Consumer electronics & devices
     "tech", "electronic", "gadget", "phone", "smartphone", "tv", "television",
-    "audio", "appliance", "computer", "laptop", "camera", "fair", "expo",
-    "digital", "home appliance", "pc fair", "consumer electronics",
-    "semicon", "semiconductor", "ict", "it fair", "smart home",
-    "innovation", "gaming", "solar", "electric vehicle", "ev charging",
-    "robotics", "automation", "drone", "fintech", "digital economy",
+    "audio", "appliance", "home appliance", "electrical appliance",
+    "computer", "laptop", "tablet", "camera",
+    # IT & Digital industry
+    "digital", "ict", "it fair", "pc fair", "consumer electronics",
+    "semiconductor", "semicon", "data center", "cloud",
+    "smart home", "smart device", "iot", "internet of things",
+    # Industrial / manufacturing tech (venue events)
+    "automation", "robotics", "manufacturing", "machinery",
+    "automechanika", "engineer", "marvex",
+    # Energy tech
+    "electric vehicle", "ev charging", "enertec", "energy tech",
+    # Gaming & entertainment tech
+    "gaming", "esports",
+    # Finance tech / digital economy
+    "fintech", "digital economy",
+    # Known Malaysia tech events
+    "itex", "mitec",
 ]
 
 
@@ -466,54 +479,168 @@ async def scrape_harvey_norman(client: httpx.AsyncClient) -> list[RawEvent]:
 
 
 async def scrape_courts(client: httpx.AsyncClient) -> list[RawEvent]:
-    events: list[RawEvent] = []
+    """
+    Courts MY – /latest-promo-and-catalogue
+    Promo banners are Magento-dynamic; only img[alt] with non-generic text
+    is available in static HTML.  Dates are extracted from alt text or
+    nearby headings where possible.
+    """
     base = "https://www.courts.com.my"
+    url  = f"{base}/latest-promo-and-catalogue"
+    events: list[RawEvent] = []
     try:
-        soup = _soup(await _get(client, f"{base}/promotions"))
-        for card in soup.select(".promotion-item, .promo-card, .banner-item, article"):
-            title_el = card.select_one("h2, h3, h4, .title")
-            if not title_el:
+        soup = _soup(await _get(client, url))
+        seen: set[str] = set()
+        for img in soup.find_all("img", src=re.compile(r"wysiwyg", re.I)):
+            alt = _clean(img.get("alt", ""))
+            src = img.get("src", "")
+            # Skip generic product-category labels ("X Image", single words, etc.)
+            if (not alt or "Image" in alt or len(alt) < 8
+                    or alt.lower() in {"store locator", "payment method",
+                                       "lowest price guaranteed",
+                                       "30 days free returns",
+                                       "product protection plans up to 10 years"}):
                 continue
-            title = _clean(title_el.get_text())
-            date_el = card.select_one(".date, .period, .validity, time")
-            start, end = _date_range(_clean(date_el.get_text()) if date_el else "")
-            link_el = card.select_one("a[href]")
-            link = _abs_url(link_el["href"] if link_el else "/promotions", base)
+            if alt in seen:
+                continue
+            seen.add(alt)
+
+            parent_a = img.find_parent("a")
+            link = parent_a["href"] if parent_a and parent_a.get("href") else url
+
+            # Try to extract a date from the alt text itself
+            start, end = _date_range(alt)
+            # Also look for dates in nearby text within the same container
+            if not start:
+                container = img.parent
+                for _ in range(4):
+                    if not container:
+                        break
+                    txt = container.get_text()
+                    s, e = _date_range(txt)
+                    if s:
+                        start, end = s, e
+                        break
+                    container = getattr(container, "parent", None)
+
             events.append(RawEvent(
-                title=title, organizer="Courts Malaysia",
+                title=alt,
+                organizer="Courts Malaysia",
                 location="Kuala Lumpur / Malaysia",
                 start_date=start, end_date=end,
-                source_url=link, source_site="Courts MY",
+                source_url=link,
+                source_site="Courts MY",
                 tags=["electronics", "retail", "promotion"],
             ))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[Courts] error: {exc}")
     return events
 
 
-async def scrape_best_denki(client: httpx.AsyncClient) -> list[RawEvent]:
+async def scrape_exhibitionsforyou(client: httpx.AsyncClient) -> list[RawEvent]:
+    """
+    exhibitionsforyou.com – Electric & Electronics category,
+    filtered for Malaysia / Kuala Lumpur events.
+    """
+    base_url = "https://exhibitionsforyou.com/event_category/electric-electronics/"
     events: list[RawEvent] = []
-    base = "https://www.bestdenki.com.my"
-    try:
-        soup = _soup(await _get(client, f"{base}/promotions/"))
-        for card in soup.select(".promotion, .promo-item, article.post, .entry"):
-            title_el = card.select_one("h2, h3, .entry-title, .title")
+    seen: set[str] = set()
+    MYS = re.compile(r"Malaysia|Kuala Lumpur\b|KL\b", re.I)
+
+    for page in range(1, 8):   # up to 7 pages
+        url = base_url if page == 1 else f"{base_url}page/{page}/"
+        try:
+            soup = _soup(await _get(client, url))
+        except Exception as exc:
+            print(f"[ExhibitionsForYou] page {page} error: {exc}")
+            break
+
+        boxes = soup.find_all(class_="event-box")
+        if not boxes:
+            break
+
+        found_any = False
+        for box in boxes:
+            box_text = box.get_text()
+            if not MYS.search(box_text):
+                continue            # skip non-Malaysia events
+
+            title_el = box.find("h2") or box.find("h3")
+            date_el  = box.find("h4")
             if not title_el:
                 continue
-            title = _clean(title_el.get_text())
-            date_el = card.select_one(".date, time, .entry-date, .period")
-            start, end = _date_range(_clean(date_el.get_text()) if date_el else "")
-            link_el = card.select_one("a[href]")
-            link = _abs_url(link_el["href"] if link_el else "/promotions/", base)
+
+            title = _clean(html_module.unescape(title_el.get_text()))
+            if not title or title in seen:
+                continue
+            seen.add(title)
+            found_any = True
+
+            date_raw    = _clean(date_el.get_text()) if date_el else ""
+            # date_el often: "05 - 07 May 2026"
+            start, end  = _date_range(date_raw)
+
+            link_el = title_el.find("a") or box.find("a", href=True)
+            link    = link_el["href"] if link_el and link_el.get("href") else base_url
+
             events.append(RawEvent(
-                title=title, organizer="Best Denki Malaysia",
-                location="Kuala Lumpur / Malaysia",
+                title=title,
+                organizer="",
+                location="Kuala Lumpur",
+                venue="",
                 start_date=start, end_date=end,
-                source_url=link, source_site="Best Denki MY",
-                tags=["electronics", "retail", "promotion"],
+                source_url=link,
+                source_site="ExhibitionsForYou",
+                tags=["exhibition", "kl", "malaysia"],
             ))
-    except Exception:
-        pass
+
+        if not found_any and page > 1:
+            break   # stop if a page has no Malaysia events
+
+    return events
+
+
+async def scrape_tmt(client: httpx.AsyncClient) -> list[RawEvent]:
+    """
+    TMT (Thunder Match) – Malaysian consumer electronics retailer.
+    Tries Shopify collection JSON API for current sale items.
+    The site is JS-rendered so HTML scraping yields nothing useful;
+    the Shopify products.json endpoint is the only viable path.
+    """
+    base = "https://www.tmt.my"
+    events: list[RawEvent] = []
+    # Shopify exposes /collections/<handle>/products.json
+    for coll in ["sale", "monthly-sales", "promotions", "deals"]:
+        url = f"{base}/collections/{coll}/products.json?limit=20"
+        try:
+            r = await client.get(url, headers=HEADERS, timeout=TIMEOUT)
+            if r.status_code != 200:
+                continue
+            data   = r.json()
+            prods  = data.get("products", [])
+            if not prods:
+                continue
+            # Use earliest available_on or created_at as start date proxy
+            for p in prods[:20]:
+                title = _clean(p.get("title", ""))
+                if not title or not _is_electronics_related(title):
+                    continue
+                handle = p.get("handle", "")
+                link   = f"{base}/products/{handle}" if handle else base
+                # Shopify product dates are not campaign dates; skip date
+                events.append(RawEvent(
+                    title=title,
+                    organizer="Thunder Match (TMT)",
+                    location="Kuala Lumpur / Malaysia",
+                    start_date="", end_date="",
+                    source_url=link,
+                    source_site="TMT",
+                    tags=["electronics", "retail", "online"],
+                ))
+            if events:
+                break   # stop after first successful collection
+        except Exception:
+            continue
     return events
 
 
@@ -651,6 +778,10 @@ async def scrape_klcc_convention(client: httpx.AsyncClient) -> list[RawEvent]:
                     continue
                 seen.add(title)
 
+                # Skip events unrelated to electronics / tech
+                if not _is_electronics_related(title):
+                    continue
+
                 url = item.get("Page Address", "").strip()
 
                 # Dates via xDataId → sdk lookup
@@ -691,6 +822,10 @@ async def scrape_mvec(client: httpx.AsyncClient) -> list[RawEvent]:
         raw_name = item.get("event", "")
         title    = _clean(BeautifulSoup(raw_name, "lxml").get_text())
         if not title:
+            continue
+
+        # Skip events unrelated to electronics / home appliances
+        if not _is_electronics_related(title):
             continue
 
         date_str    = (item.get("datetime") or {}).get("date", "")
@@ -1122,10 +1257,11 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
     "Senheng":              ("Tier2-Retail",     scrape_senheng),
     "Harvey Norman MY":     ("Tier2-Retail",     scrape_harvey_norman),
     "Courts MY":            ("Tier2-Retail",     scrape_courts),
-    "Best Denki MY":        ("Tier2-Retail",     scrape_best_denki),
+    "TMT":                  ("Tier2-Retail",     scrape_tmt),
     "MITEC":                ("Tier3-Venue",      scrape_mitec),
     "KLCC Convention":      ("Tier3-Venue",      scrape_klcc_convention),
     "MVEC":                 ("Tier3-Venue",      scrape_mvec),
+    "ExhibitionsForYou":    ("Tier3-Venue",      scrape_exhibitionsforyou),
     "PWTC":                 ("Tier3-Venue",      scrape_pwtc),
     "Mid Valley":           ("Tier3-Venue",      scrape_midvalley),
     "Sunway Pyramid":       ("Tier3-Venue",      scrape_sunway),

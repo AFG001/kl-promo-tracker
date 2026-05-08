@@ -359,6 +359,20 @@ body {
 .tier-table tr:last-child td { border-bottom: none; }
 .tier-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 
+/* ===== Hidden Events Modal ===== */
+.hidden-event-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.hidden-event-row:last-child { border-bottom: none; }
+.hidden-event-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.hidden-event-title { font-size: .8rem; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hidden-event-site  { font-size: .69rem; color: var(--muted); }
+
 /* ===== Loading ===== */
 .loading { color: var(--muted); text-align: center; padding: 32px; font-size: .84rem; }
 
