@@ -761,21 +761,6 @@ async def scrape_expolah(client: httpx.AsyncClient) -> list[RawEvent]:
                 print(f"[Expolah] {category} page {page} error: {exc}")
                 break
 
-            # Debug: report page structure on first page of each category
-            if page == 1:
-                all_h3 = soup.find_all("h3")
-                all_h2 = soup.find_all("h2")
-                all_h4 = soup.find_all("h4")
-                # Show first 500 chars of raw HTML to detect Cloudflare / JS shell
-                print(
-                    f"[Expolah debug] {category} → "
-                    f"html_len={len(html)} h2={len(all_h2)} h3={len(all_h3)} h4={len(all_h4)}"
-                )
-                print(f"  html_snippet: {html[:500]!r}")
-                # Unique tag names actually used on the page
-                all_tags = {t.name for t in soup.find_all(True)}
-                print(f"  tags used: {sorted(all_tags)}")
-
             # Strategy 1: common event-card containers
             cards = soup.select(
                 "article, .event-card, .event-item, "
@@ -783,21 +768,20 @@ async def scrape_expolah(client: httpx.AsyncClient) -> list[RawEvent]:
                 ".tribe-events-calendar-list__event-row, li[class*='event']"
             )
 
-            # Strategy 2: any h3 whose text looks like an event title.
-            # We're already on a category=technology / trade-fairs page so
-            # skip _is_electronics_related() — it's already filtered upstream.
+            # Strategy 2: h3 anchors — re-apply electronics filter because the
+            # ?category= URL param doesn't actually filter server-side; Expolah
+            # returns ALL events (concerts, food fairs, pet expos …) regardless.
             if not cards:
                 h3_anchors = soup.find_all("h3")
-                print(f"[Expolah debug] {category} p{page}: no cards → "
-                      f"trying {len(h3_anchors)} h3 anchors")
-                # Print first 15 h3 texts for diagnostic
-                print(f"  h3 titles: {[_clean(h.get_text())[:60] for h in h3_anchors[:15]]}")
                 for h3 in h3_anchors:
                     title = _clean(h3.get_text())
                     if not title or len(title) < 8:
                         continue
-                    # Skip nav/footer items (short or all-caps menu labels)
+                    # Skip obvious nav/filter labels
                     if title.isupper() and len(title) < 40:
+                        continue
+                    # Re-apply electronics filter (URL category param is ignored by server)
+                    if not _is_electronics_related(title):
                         continue
                     if title in seen:
                         continue
@@ -886,17 +870,7 @@ async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
         html = await _get(client, url)
         soup = _soup(html)
 
-        # Debug: report page structure
-        h_counts = {t: len(soup.find_all(t)) for t in ["h1", "h2", "h3", "h4"]}
-        all_tags = {t.name for t in soup.find_all(True)}
-        print(
-            f"[MTE debug] html_len={len(html)} "
-            f"h1={h_counts['h1']} h2={h_counts['h2']} h3={h_counts['h3']} h4={h_counts['h4']}"
-        )
-        print(f"  tags used: {sorted(all_tags)}")
-        print(f"  html_snippet: {html[:500]!r}")
-        for i, h in enumerate(soup.find_all(["h1", "h2", "h3", "h4"])[:8]):
-            print(f"  {h.name}[{i}]: {_clean(h.get_text())[:80]!r}")
+
 
         # First try: JSON-LD structured data
         jld = _jsonld_events(

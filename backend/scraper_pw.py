@@ -479,10 +479,18 @@ async def scrape_myceb_pw() -> list[RawEvent]:
                 pass
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000)
                 await page.evaluate("window.scrollTo(0, 0)")
+                await page.wait_for_timeout(1000)
             except Exception:
                 pass
+
+            # Debug: dump first 4000 chars of rendered DOM to understand structure
+            try:
+                dom_html = await page.content()
+                print(f"    [MyCEB PW] {path} DOM snippet:\n{dom_html[dom_html.find('<body'):dom_html.find('<body')+4000]!r}")
+            except Exception as exc:
+                print(f"    [MyCEB PW] content() error: {exc}")
 
             # MyCEB uses X-Theme/Cornerstone with UUID-based class names —
             # no semantic selectors work.  Instead, use JS to harvest all
