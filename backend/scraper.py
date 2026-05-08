@@ -437,12 +437,8 @@ async def scrape_harvey_norman(client: httpx.AsyncClient) -> list[RawEvent]:
     url  = f"{base}/promotions/catalogues-and-promotions.html"
     try:
         html = await _get(client, url)
-        # Debug: show response size and first tag to detect bot-block pages
-        preview = html[:200].replace("\n", " ")
-        print(f"    [HN debug] html_len={len(html)} preview={preview!r}")
         soup = _soup(html)
         all_imgs = soup.select("img[alt]")
-        print(f"    [HN debug] img[alt] count={len(all_imgs)}")
         seen: set[str] = set()
 
         for img in all_imgs:
@@ -665,10 +661,8 @@ async def scrape_mitec(client: httpx.AsyncClient) -> list[RawEvent]:
     for url in [f"{base}/", f"{base}/events/"]:
         try:
             html = await _get(client, url)
-            print(f"    [MITEC debug] url={url} html_len={len(html)}")
             soup = _soup(html)
             nodes = soup.find_all(string=_DATE_TEXT_RE)
-            print(f"    [MITEC debug] date_text_nodes={len(nodes)} examples={[str(n)[:40] for n in nodes[:3]]}")
 
             # JSON-LD first
             jld = _jsonld_events(soup, url, "MITEC", "MITEC",
@@ -712,7 +706,6 @@ async def scrape_mitec(client: httpx.AsyncClient) -> list[RawEvent]:
                 seen.add(key)
                 link_node = node.select_one("a[href]") or text_node.parent.find_next("a", href=True)
                 link = _abs_url(link_node["href"], base) if link_node else url
-                print(f"    [MITEC] found: '{title[:50]}' {start}~{end}")
                 events.append(RawEvent(
                     title=title, organizer="MITEC",
                     location="Kuala Lumpur",
@@ -880,7 +873,6 @@ async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
             ["exhibition", "technology", "innovation", "kl"],
         )
         if jld:
-            print(f"[MTE debug] found {len(jld)} JSON-LD events")
             return [e for e in jld if _is_electronics_related(e.title)]
 
         # Fallback: scan headings for "MTE" or "Malaysia Technology Expo".
@@ -917,14 +909,12 @@ async def scrape_mte(client: httpx.AsyncClient) -> list[RawEvent]:
                         break
 
             if not start:
-                print(f"[MTE debug] heading found but no date: {h_text[:80]!r}")
                 continue
 
             venue = "World Trade Centre Kuala Lumpur"
             link_el = heading.find("a", href=True) or container.find("a", href=True)
             link    = _abs_url(link_el["href"], base) if link_el else base
 
-            print(f"[MTE debug] event: {h_text[:60]!r}  {start}~{end}")
             events.append(RawEvent(
                 title=h_text[:200],
                 organizer="Malaysia Technology Expo",
@@ -967,10 +957,8 @@ async def scrape_myceb(client: httpx.AsyncClient) -> list[RawEvent]:
     for url in test_urls:
         try:
             html = await _get(client, url)
-        except Exception as exc:
-            print(f"[MyCEB SV] {url[:80]} error: {exc}")
+        except Exception:
             continue
-        print(f"[MyCEB SV] {url[:90]} → {len(html)} bytes snippet={html[:200]!r}")
         if len(html) < 500:
             continue   # empty / redirect
 
@@ -981,7 +969,6 @@ async def scrape_myceb(client: httpx.AsyncClient) -> list[RawEvent]:
             "Kuala Lumpur", "", ["exhibition", "mice", "kl"],
         )
         if jld:
-            print(f"[MyCEB SV] found {len(jld)} JSON-LD events")
             events.extend(e for e in jld if _is_electronics_related(e.title))
             break
 
@@ -1011,7 +998,6 @@ async def scrape_myceb(client: httpx.AsyncClient) -> list[RawEvent]:
         if events:
             break
 
-    print(f"[MyCEB SV] total {len(events)} events")
     return events
 
 
@@ -1537,7 +1523,10 @@ SCRAPERS: dict[str, tuple[str, callable]] = {
     # all events (concerts, food fairs, pet expos) — no tech filtering possible.
     # "Expolah":            ("Tier1-Exhibition", scrape_expolah),
     "MTE":                  ("Tier1-Exhibition", scrape_mte),
-    "MyCEB":                ("Tier1-Exhibition", scrape_myceb),
+    # MyCEB disabled: xtopia.io CMS doesn't render content in headless mode
+    # (dropdown options load via JS that fails silently); SimpleView CRM
+    # backend (malaysia.simpleviewcrm.com) requires authentication.
+    # "MyCEB":              ("Tier1-Exhibition", scrape_myceb),
     "Senheng":              ("Tier2-Retail",     scrape_senheng),
     "Harvey Norman MY":     ("Tier2-Retail",     scrape_harvey_norman),
     "Courts MY":            ("Tier2-Retail",     scrape_courts),

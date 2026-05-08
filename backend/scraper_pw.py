@@ -585,7 +585,9 @@ _PW_SCRAPERS: list[tuple[str, callable]] = [
     # TMT disabled: tmt.my consistently times out (networkidle never reached).
     # ("TMT",             scrape_tmt_pw),
     ("10times",           scrape_10times_pw),
-    ("MyCEB",             scrape_myceb_pw),
+    # MyCEB disabled: xtopia.io CMS doesn't render in headless mode
+    # (dropdown options don't load); SimpleView CRM backend requires auth.
+    # ("MyCEB",           scrape_myceb_pw),
 ]
 
 
