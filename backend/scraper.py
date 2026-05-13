@@ -429,46 +429,65 @@ async def scrape_senheng(client: httpx.AsyncClient) -> list[RawEvent]:
 async def scrape_harvey_norman(client: httpx.AsyncClient) -> list[RawEvent]:
     """
     Harvey Norman MY promotions.
-    Dates are embedded in <img alt="Title (DD Mon - DD Mon YYYY) - Promo Banner"> attributes.
-    This is in static HTML — no JS rendering needed.
+    Two banner patterns coexist on the catalogue page:
+      Pattern A (older CMS): date in img[alt] and img[title]
+        e.g. 'Haier Cool Season (08 May - 19 Jul 2026) - Promo Banner'
+      Pattern B (newer wysiwyg): img[alt]='Name' placeholder;
+        date is in the parent <a title> attribute instead.
+        e.g. <a title="HP AI PC (07 May - 24 Jun 2026) - Promo Catalogue">
+    Strategy: for every catalogue anchor (href contains ?ref=cataloguebanner),
+    check <a title> first, then img[alt]/img[title] as fallback.
     """
     events: list[RawEvent] = []
     base = "https://www.harveynorman.com.my"
     url  = f"{base}/promotions/catalogues-and-promotions.html"
+    _DATE_PAREN_RE = re.compile(
+        r"^(.+?)\s*\((\d{1,2}\s+\w+[^)]+\d{4})\)", re.I
+    )
     try:
         html = await _get(client, url)
         soup = _soup(html)
-        all_imgs = soup.select("img[alt]")
         seen: set[str] = set()
 
-        for img in all_imgs:
-            alt = img.get("alt", "")
-            # Pattern: "Promo Title (DD Mon - DD Mon YYYY)" or "(DD Mon YYYY)"
-            m = re.search(r"^(.+?)\s*\((\d{1,2}\s+\w+[^)]+\d{4})\)", alt)
-            if not m:
-                continue
-            title    = _clean(m.group(1))
-            date_str = m.group(2).strip()
-            if not title or len(title) < 5:
-                continue
-            start, end = _date_range(date_str)
-            if not start:
-                continue
-            if title in seen:
-                continue
-            seen.add(title)
+        for a in soup.find_all("a", href=re.compile(r"ref=cataloguebanner", re.I)):
+            href = a.get("href", "")
+            link = _abs_url(href, base) if href else url
 
-            parent_a = img.find_parent("a")
-            link = _abs_url(parent_a["href"], base) if parent_a and parent_a.get("href") else url
+            # Collect candidate text strings: <a title>, img[alt], img[title]
+            img = a.find("img")
+            candidates = [
+                _clean(a.get("title", "")),
+                _clean(img.get("alt", "")) if img else "",
+                _clean(img.get("title", "")) if img else "",
+            ]
 
-            events.append(RawEvent(
-                title=title,
-                organizer="Harvey Norman Malaysia",
-                location="Kuala Lumpur / Malaysia",
-                start_date=start, end_date=end,
-                source_url=link, source_site="Harvey Norman MY",
-                tags=["electronics", "retail", "promotion"],
-            ))
+            for candidate in candidates:
+                # Skip placeholders like "Name" or very short strings
+                if not candidate or candidate.lower() == "name" or len(candidate) < 8:
+                    continue
+                m = _DATE_PAREN_RE.match(candidate)
+                if not m:
+                    continue
+                title    = _clean(m.group(1))
+                date_str = m.group(2).strip()
+                if not title or len(title) < 5:
+                    continue
+                start, end = _date_range(date_str)
+                if not start:
+                    continue
+                if title in seen:
+                    break
+                seen.add(title)
+                events.append(RawEvent(
+                    title=title,
+                    organizer="Harvey Norman Malaysia",
+                    location="Kuala Lumpur / Malaysia",
+                    start_date=start, end_date=end,
+                    source_url=link, source_site="Harvey Norman MY",
+                    tags=["electronics", "retail", "promotion"],
+                ))
+                break  # one event per anchor
+
     except Exception as exc:
         print(f"[scraper] Harvey Norman error: {exc}")
     return events
