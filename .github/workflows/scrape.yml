@@ -1,9 +1,9 @@
 name: Scrape KL Electronics Promotions
 
 on:
-  schedule:
-    # 10:00 AM Malaysia Time (UTC+8) = 02:00 UTC
-    - cron: '0 2 * * *'
+  # schedule:
+  #   # 10:00 AM Malaysia Time (UTC+8) = 02:00 UTC
+  #   - cron: '0 2 * * *'
   workflow_dispatch:   # allow manual trigger from GitHub UI
 
 jobs:
